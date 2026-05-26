@@ -1,28 +1,37 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { supabase } from "@/src/lib/supabase";
 
 const categories = ["일기", "투자", "지출", "운동", "콘텐츠", "가치관"] as const;
 
 type Category = (typeof categories)[number];
 
-type LedgerEntry = {
+type RecordRow = {
+  id: string;
+  category: string;
+  content: string;
+  created_at: string;
+};
+
+type LedgerRecord = {
   id: string;
   date: string;
   category: Category;
   content: string;
+  createdAt: string;
 };
 
-type StoredLedgerEntry = Omit<LedgerEntry, "category"> & {
-  category: string;
-};
-
-const STORAGE_KEY = "life-ledger:entries";
+const BACKUP_STORAGE_KEY = "life-ledger:backup-records";
 const legacyCategoryMap = {
   신앙: "가치관",
 } as const satisfies Record<string, Category>;
 
-function normalizeCategory(value: string): Category | null {
+function isCategory(value: string): value is Category {
+  return categories.includes(value as Category);
+}
+
+function normalizeCategory(value: string): Category {
   if (isCategory(value)) {
     return value;
   }
@@ -31,97 +40,107 @@ function normalizeCategory(value: string): Category | null {
     return legacyCategoryMap[value as keyof typeof legacyCategoryMap];
   }
 
-  return null;
+  return "가치관";
 }
 
-function isCategory(value: string): value is Category {
-  return categories.includes(value as Category);
-}
+function formatDate(value: string) {
+  const date = new Date(value);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
 
-function isLedgerEntry(value: unknown): value is StoredLedgerEntry {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const entry = value as Partial<StoredLedgerEntry>;
-
-  return (
-    typeof entry.id === "string" &&
-    typeof entry.date === "string" &&
-    typeof entry.category === "string" &&
-    normalizeCategory(entry.category) !== null &&
-    typeof entry.content === "string"
-  );
-}
-
-function normalizeLedgerEntry(entry: StoredLedgerEntry): LedgerEntry {
-  return {
-    ...entry,
-    category: normalizeCategory(entry.category) ?? "가치관",
-  };
-}
-
-function createMarkdown(entry: Pick<LedgerEntry, "date" | "category" | "content">) {
-  return `# ${entry.date} 기록
-
-## 카테고리
-- ${entry.category}
-
-## 내용
-${entry.content}`;
+  return `${year}-${month}-${day}`;
 }
 
 function getToday() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
+  return formatDate(new Date().toISOString());
+}
 
-  return `${year}-${month}-${day}`;
+function mapRecordRow(row: RecordRow): LedgerRecord {
+  return {
+    id: row.id,
+    date: formatDate(row.created_at),
+    category: normalizeCategory(row.category),
+    content: row.content,
+    createdAt: row.created_at,
+  };
+}
+
+function createMarkdown(
+  record: Pick<LedgerRecord, "date" | "category" | "content">,
+) {
+  return `# ${record.date} 기록
+
+## 카테고리
+- ${record.category}
+
+## 내용
+${record.content}`;
+}
+
+function backupRecord(record: Pick<LedgerRecord, "category" | "content">) {
+  const backupRecord = {
+    id: crypto.randomUUID(),
+    category: record.category,
+    content: record.content,
+    created_at: new Date().toISOString(),
+  };
+
+  try {
+    const existingBackup = window.localStorage.getItem(BACKUP_STORAGE_KEY);
+    const parsedBackup = existingBackup
+      ? (JSON.parse(existingBackup) as unknown)
+      : [];
+    const backupRecords = Array.isArray(parsedBackup) ? parsedBackup : [];
+
+    window.localStorage.setItem(
+      BACKUP_STORAGE_KEY,
+      JSON.stringify([backupRecord, ...backupRecords]),
+    );
+  } catch {
+    window.localStorage.setItem(
+      BACKUP_STORAGE_KEY,
+      JSON.stringify([backupRecord]),
+    );
+  }
 }
 
 export default function Home() {
   const [selectedCategory, setSelectedCategory] = useState<Category>("일기");
   const [content, setContent] = useState("");
-  const [entries, setEntries] = useState<LedgerEntry[]>([]);
+  const [records, setRecords] = useState<LedgerRecord[]>([]);
   const [copyMessage, setCopyMessage] = useState("");
-  const hasLoadedEntries = useRef(false);
+  const [errorMessage, setErrorMessage] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
 
-  useEffect(() => {
-    const storedEntries = window.localStorage.getItem(STORAGE_KEY);
+  const fetchRecords = useCallback(async () => {
+    setIsLoading(true);
+    setErrorMessage("");
 
-    if (!storedEntries) {
-      hasLoadedEntries.current = true;
+    const { data, error } = await supabase
+      .from("records")
+      .select("id, category, content, created_at")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      setErrorMessage(`기록을 불러오지 못했습니다: ${error.message}`);
+      setRecords([]);
+      setIsLoading(false);
       return;
     }
 
-    try {
-      const parsedEntries = JSON.parse(storedEntries) as unknown;
-      const storedLedgerEntries = Array.isArray(parsedEntries)
-        ? parsedEntries.filter(isLedgerEntry)
-        : [];
-      const normalizedLedgerEntries =
-        storedLedgerEntries.map(normalizeLedgerEntry);
-
-      queueMicrotask(() => {
-        setEntries(normalizedLedgerEntries);
-        hasLoadedEntries.current = true;
-      });
-    } catch {
-      window.localStorage.removeItem(STORAGE_KEY);
-      hasLoadedEntries.current = true;
-    }
+    setRecords((data ?? []).map((row) => mapRecordRow(row as RecordRow)));
+    setIsLoading(false);
   }, []);
 
   useEffect(() => {
-    if (!hasLoadedEntries.current) {
-      return;
-    }
+    queueMicrotask(() => {
+      void fetchRecords();
+    });
+  }, [fetchRecords]);
 
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
-  }, [entries]);
-
-  const canSave = content.trim().length > 0;
+  const canSave = content.trim().length > 0 && !isSaving;
 
   const draftMarkdown = useMemo(
     () =>
@@ -133,23 +152,37 @@ export default function Home() {
     [content, selectedCategory],
   );
 
-  function handleSave() {
+  async function handleSave() {
     const trimmedContent = content.trim();
 
     if (!trimmedContent) {
       return;
     }
 
-    const nextEntry: LedgerEntry = {
-      id: crypto.randomUUID(),
-      date: getToday(),
+    setIsSaving(true);
+    setErrorMessage("");
+    setCopyMessage("");
+
+    const { error } = await supabase.from("records").insert({
       category: selectedCategory,
       content: trimmedContent,
-    };
+    });
 
-    setEntries((currentEntries) => [nextEntry, ...currentEntries]);
+    if (error) {
+      backupRecord({
+        category: selectedCategory,
+        content: trimmedContent,
+      });
+      setErrorMessage(
+        `저장에 실패했습니다: ${error.message}. 이 브라우저에 백업을 남겼습니다.`,
+      );
+      setIsSaving(false);
+      return;
+    }
+
     setContent("");
-    setCopyMessage("");
+    setIsSaving(false);
+    await fetchRecords();
   }
 
   async function handleCopy(markdown: string) {
@@ -222,17 +255,23 @@ export default function Home() {
               disabled={!canSave}
               className="touch-manipulation rounded-lg bg-zinc-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
             >
-              저장
+              {isSaving ? "저장 중..." : "저장"}
             </button>
             <button
               type="button"
               onClick={() => handleCopy(draftMarkdown)}
-              disabled={!canSave}
+              disabled={!content.trim()}
               className="touch-manipulation rounded-lg border border-zinc-300 bg-white px-5 py-3 text-sm font-semibold text-zinc-800 transition hover:border-zinc-950 disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-300"
             >
               Markdown 복사
             </button>
           </div>
+
+          {errorMessage ? (
+            <p className="mt-3 text-sm font-medium text-red-700">
+              {errorMessage}
+            </p>
+          ) : null}
 
           {copyMessage ? (
             <p className="mt-3 text-sm font-medium text-emerald-700">
@@ -246,44 +285,51 @@ export default function Home() {
             <div>
               <h2 className="text-lg font-bold text-zinc-950">저장된 기록</h2>
               <p className="mt-1 text-sm text-zinc-500">
-                새로고침해도 이 브라우저에 기록이 남습니다.
+                Supabase DB 기준으로 모든 기기에서 같은 기록을 봅니다.
               </p>
             </div>
             <span className="rounded-full bg-zinc-200 px-3 py-1 text-xs font-semibold text-zinc-700">
-              {entries.length}개
+              {records.length}개
             </span>
           </div>
 
-          {entries.length === 0 ? (
+          {isLoading ? (
+            <div className="rounded-lg border border-dashed border-zinc-300 bg-white p-6 text-center text-sm text-zinc-500">
+              불러오는 중...
+            </div>
+          ) : records.length === 0 ? (
             <div className="rounded-lg border border-dashed border-zinc-300 bg-white p-6 text-center text-sm text-zinc-500">
               아직 저장된 기록이 없습니다.
             </div>
           ) : (
             <div className="space-y-3">
-              {entries.map((entry) => (
+              {records.map((record) => (
                 <article
-                  key={entry.id}
+                  key={record.id}
                   className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm"
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
-                      <time className="text-sm font-semibold text-zinc-900">
-                        {entry.date}
+                      <time
+                        className="text-sm font-semibold text-zinc-900"
+                        dateTime={record.createdAt}
+                      >
+                        {record.date}
                       </time>
                       <span className="rounded-full bg-stone-100 px-3 py-1 text-xs font-semibold text-zinc-700">
-                        {entry.category}
+                        {record.category}
                       </span>
                     </div>
                     <button
                       type="button"
-                      onClick={() => handleCopy(createMarkdown(entry))}
+                      onClick={() => handleCopy(createMarkdown(record))}
                       className="touch-manipulation rounded-lg border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
                     >
                       Markdown 복사
                     </button>
                   </div>
                   <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-zinc-700">
-                    {entry.content}
+                    {record.content}
                   </p>
                 </article>
               ))}
