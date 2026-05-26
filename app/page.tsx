@@ -31,6 +31,34 @@ type LedgerRecord = {
 const BACKUP_STORAGE_KEY = "life-ledger:backup-records";
 const AUTH_STORAGE_KEY = "life-ledger:is-authenticated";
 const appPassword = process.env.NEXT_PUBLIC_APP_PASSWORD;
+const koreanDateFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Seoul",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+const keywordStopWords = new Set([
+  "그리고",
+  "하지만",
+  "그래서",
+  "오늘",
+  "이번",
+  "저번",
+  "내일",
+  "너무",
+  "정말",
+  "조금",
+  "많이",
+  "있는",
+  "없는",
+  "했다",
+  "한다",
+  "해서",
+  "것",
+  "수",
+  "더",
+  "좀",
+]);
 const categoryHints: Record<Category, string> = {
   일기: "오늘 느낀 감정, 사건, 생각을 자유롭게 적어보세요.",
   투자: "매수, 매도, 배당, 종목 생각을 자유롭게 적어보세요.",
@@ -105,24 +133,51 @@ function formatLocalDate(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
+function formatKoreanDate(date: Date) {
+  return koreanDateFormatter.format(date);
+}
+
+function getKoreanToday() {
+  return formatKoreanDate(new Date());
+}
+
+function getKoreanWeekStartDate() {
+  const now = new Date();
+  const koreanNow = new Date(
+    now.toLocaleString("en-US", { timeZone: "Asia/Seoul" }),
+  );
+  const day = koreanNow.getDay();
+  const daysFromMonday = day === 0 ? 6 : day - 1;
+
+  koreanNow.setDate(koreanNow.getDate() - daysFromMonday);
+
+  return formatLocalDate(koreanNow);
+}
+
+function getWeeklyReviewTitle(date: string) {
+  const [, monthText, dayText] = date.split("-");
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const weekOfMonth = Math.ceil(day / 7);
+
+  return `${month}월 ${weekOfMonth}주차`;
+}
+
 function getToday() {
-  return formatLocalDate(new Date());
+  return getKoreanToday();
 }
 
 function getYesterday() {
-  const date = new Date();
+  const date = new Date(
+    new Date().toLocaleString("en-US", { timeZone: "Asia/Seoul" }),
+  );
   date.setDate(date.getDate() - 1);
 
   return formatLocalDate(date);
 }
 
 function getWeekStart() {
-  const date = new Date();
-  const day = date.getDay();
-  const daysFromMonday = day === 0 ? 6 : day - 1;
-  date.setDate(date.getDate() - daysFromMonday);
-
-  return formatLocalDate(date);
+  return getKoreanWeekStartDate();
 }
 
 function matchesPeriod(record: LedgerRecord, periodFilter: PeriodFilter) {
@@ -219,6 +274,81 @@ ${connectionTags}
 
 ## 추천 태그
 ${recommendedTagLines}`;
+}
+
+function extractFrequentKeywords(records: LedgerRecord[]) {
+  const counts = new Map<string, number>();
+
+  for (const record of records) {
+    const words = record.content
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .split(/\s+/)
+      .map((word) => word.trim())
+      .filter((word) => word.length >= 2 && !keywordStopWords.has(word));
+
+    for (const word of words) {
+      counts.set(word, (counts.get(word) ?? 0) + 1);
+    }
+  }
+
+  return Array.from(counts.entries())
+    .sort((first, second) => second[1] - first[1])
+    .slice(0, 10)
+    .map(([word, count]) => `- ${word} (${count})`);
+}
+
+function createWeeklyReviewMarkdown(records: LedgerRecord[], today: string) {
+  const weekTitle = getWeeklyReviewTitle(today);
+  const recordsByCategory = new Map<Category, LedgerRecord[]>(
+    categories.map((category) => [category, []]),
+  );
+
+  for (const record of records) {
+    recordsByCategory.get(record.category)?.push(record);
+  }
+
+  const categorySections = categories
+    .map((category) => {
+      const categoryRecords = recordsByCategory.get(category) ?? [];
+      const recordLines =
+        categoryRecords.length > 0
+          ? categoryRecords.map((record) => `- ${record.content}`).join("\n")
+          : "- 기록 없음";
+
+      return `### ${category}\n${recordLines}`;
+    })
+    .join("\n\n");
+  const keywordLines = extractFrequentKeywords(records);
+  const keywordSection =
+    keywordLines.length > 0 ? keywordLines.join("\n") : "- 기록 없음";
+
+  return `# ${today.slice(0, 4)}년 ${weekTitle} Life Ledger 회고
+
+## 이번 주 기록 요약
+
+${categorySections}
+
+## 이번 주 반복 키워드
+${keywordSection}
+
+## 이번 주 좋았던 점
+- 
+
+## 이번 주 아쉬웠던 점
+- 
+
+## 다음 주 집중할 것
+- 
+
+## 연결 태그
+- [[주간회고]]
+- [[Life Ledger]]
+- [[일기]]
+- [[투자]]
+- [[지출]]
+- [[운동]]
+- [[콘텐츠]]
+- [[가치관]]`;
 }
 
 function groupRecordsByDate(records: LedgerRecord[]) {
@@ -332,6 +462,13 @@ export default function Home() {
     () => records.filter((record) => record.date === today),
     [records, today],
   );
+  const thisWeekRecords = useMemo(() => {
+    const weekStart = getWeekStart();
+
+    return records.filter(
+      (record) => record.date >= weekStart && record.date <= today,
+    );
+  }, [records, today]);
   const filteredRecords = useMemo(
     () => {
       const normalizedSearchQuery = searchQuery.trim().toLowerCase();
@@ -367,6 +504,10 @@ export default function Home() {
   const todayMarkdown = useMemo(
     () => createDailyMarkdown(todayRecords, today),
     [todayRecords, today],
+  );
+  const weeklyReviewMarkdown = useMemo(
+    () => createWeeklyReviewMarkdown(thisWeekRecords, today),
+    [thisWeekRecords, today],
   );
 
   function handleUnlock(event: FormEvent<HTMLFormElement>) {
@@ -489,6 +630,23 @@ export default function Home() {
       setCopyMessage("Markdown이 복사되었습니다.");
     } catch {
       setCopyMessage("브라우저에서 클립보드 복사를 허용하지 않았습니다.");
+    }
+  }
+
+  async function handleCopyWeeklyReview() {
+    if (thisWeekRecords.length === 0) {
+      setCopyMessage("");
+      setErrorMessage("이번 주 기록이 없습니다.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(weeklyReviewMarkdown);
+      setCopyMessage("이번 주 회고 Markdown이 복사되었습니다.");
+      setErrorMessage("");
+    } catch {
+      setCopyMessage("");
+      setErrorMessage("브라우저에서 클립보드 복사를 허용하지 않았습니다.");
     }
   }
 
@@ -695,6 +853,14 @@ export default function Home() {
               오늘 기록 .md 다운로드
             </button>
           </div>
+
+          <button
+            type="button"
+            onClick={handleCopyWeeklyReview}
+            className="mt-2 w-full touch-manipulation rounded-lg border border-zinc-300 bg-white px-5 py-3 text-sm font-semibold text-zinc-800 transition hover:border-zinc-950 disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-300"
+          >
+            이번 주 회고 Markdown 복사
+          </button>
 
           {errorMessage ? (
             <p className="mt-3 text-sm font-medium text-red-700">
