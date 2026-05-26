@@ -1,5 +1,6 @@
 "use client";
 
+import type { FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/src/lib/supabase";
 
@@ -8,6 +9,7 @@ const filterCategories = ["전체", ...categories] as const;
 
 type Category = (typeof categories)[number];
 type CategoryFilter = (typeof filterCategories)[number];
+type AuthStatus = "checking" | "locked" | "unlocked";
 
 type RecordRow = {
   id: string;
@@ -30,6 +32,8 @@ type QuickTemplate = {
 };
 
 const BACKUP_STORAGE_KEY = "life-ledger:backup-records";
+const AUTH_STORAGE_KEY = "life-ledger:is-authenticated";
+const appPassword = process.env.NEXT_PUBLIC_APP_PASSWORD;
 const quickTemplates: Record<Category, QuickTemplate[]> = {
   일기: [
     {
@@ -338,6 +342,9 @@ function backupRecord(record: Pick<LedgerRecord, "category" | "content">) {
 }
 
 export default function Home() {
+  const [authStatus, setAuthStatus] = useState<AuthStatus>("checking");
+  const [passwordInput, setPasswordInput] = useState("");
+  const [passwordError, setPasswordError] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<Category>("일기");
   const [selectedFilter, setSelectedFilter] = useState<CategoryFilter>("전체");
   const [searchQuery, setSearchQuery] = useState("");
@@ -371,9 +378,28 @@ export default function Home() {
 
   useEffect(() => {
     queueMicrotask(() => {
+      if (!appPassword) {
+        console.warn("NEXT_PUBLIC_APP_PASSWORD is not set");
+        setAuthStatus("locked");
+        return;
+      }
+
+      const isAuthenticated =
+        window.sessionStorage.getItem(AUTH_STORAGE_KEY) === "true";
+
+      setAuthStatus(isAuthenticated ? "unlocked" : "locked");
+    });
+  }, []);
+
+  useEffect(() => {
+    if (authStatus !== "unlocked") {
+      return;
+    }
+
+    queueMicrotask(() => {
       void fetchRecords();
     });
-  }, [fetchRecords]);
+  }, [authStatus, fetchRecords]);
 
   const canSave = content.trim().length > 0 && !isSaving;
   const today = getToday();
@@ -412,6 +438,33 @@ export default function Home() {
     () => createDailyMarkdown(todayRecords, today),
     [todayRecords, today],
   );
+
+  function handleUnlock(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!appPassword) {
+      setPasswordError("비밀번호 설정이 필요합니다.");
+      return;
+    }
+
+    if (passwordInput === appPassword) {
+      window.sessionStorage.setItem(AUTH_STORAGE_KEY, "true");
+      setAuthStatus("unlocked");
+      setPasswordInput("");
+      setPasswordError("");
+      return;
+    }
+
+    setPasswordError("비밀번호가 맞지 않습니다.");
+  }
+
+  function handleLock() {
+    window.sessionStorage.removeItem(AUTH_STORAGE_KEY);
+    setAuthStatus("locked");
+    setPasswordInput("");
+    setPasswordError("");
+    setRecords([]);
+  }
 
   async function handleSave() {
     const trimmedContent = content.trim();
@@ -480,17 +533,84 @@ export default function Home() {
     }
   }
 
+  if (authStatus === "checking") {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-stone-50 px-4 py-8 text-zinc-950">
+        <div className="w-full max-w-sm rounded-lg border border-zinc-200 bg-white p-6 text-center shadow-sm">
+          <h1 className="text-3xl font-bold tracking-normal">Life Ledger</h1>
+          <p className="mt-3 text-sm text-zinc-500">잠금 상태를 확인하는 중...</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (authStatus === "locked") {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-stone-50 px-4 py-8 text-zinc-950">
+        <section className="w-full max-w-sm rounded-lg border border-zinc-200 bg-white p-6 shadow-sm">
+          <div className="text-center">
+            <h1 className="text-3xl font-bold tracking-normal">Life Ledger</h1>
+            <p className="mt-3 text-sm leading-6 text-zinc-600">
+              {appPassword
+                ? "비밀번호를 입력하세요."
+                : "비밀번호 설정이 필요합니다."}
+            </p>
+          </div>
+
+          <form className="mt-6 space-y-4" onSubmit={handleUnlock}>
+            <label className="block">
+              <span className="text-sm font-semibold text-zinc-800">
+                비밀번호
+              </span>
+              <input
+                type="password"
+                value={passwordInput}
+                onChange={(event) => setPasswordInput(event.target.value)}
+                disabled={!appPassword}
+                placeholder="비밀번호"
+                className="mt-2 w-full rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10 disabled:bg-zinc-100"
+              />
+            </label>
+
+            {passwordError ? (
+              <p className="text-sm font-medium text-red-700">
+                {passwordError}
+              </p>
+            ) : null}
+
+            <button
+              type="submit"
+              disabled={!appPassword || !passwordInput}
+              className="w-full touch-manipulation rounded-lg bg-zinc-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
+            >
+              들어가기
+            </button>
+          </form>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-stone-50 px-4 py-6 text-zinc-950 sm:px-6">
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
         <section className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm sm:p-7">
-          <div className="space-y-2">
-            <h1 className="text-3xl font-bold tracking-normal text-zinc-950 sm:text-4xl">
-              Life Ledger
-            </h1>
-            <p className="text-sm leading-6 text-zinc-600 sm:text-base">
-              오늘의 기록을 빠르게 남기고, Markdown으로 정리하세요.
-            </p>
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-2">
+              <h1 className="text-3xl font-bold tracking-normal text-zinc-950 sm:text-4xl">
+                Life Ledger
+              </h1>
+              <p className="text-sm leading-6 text-zinc-600 sm:text-base">
+                오늘의 기록을 빠르게 남기고, Markdown으로 정리하세요.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleLock}
+              className="shrink-0 touch-manipulation rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
+            >
+              잠금
+            </button>
           </div>
 
           <div className="mt-6 space-y-3">
