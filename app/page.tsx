@@ -355,6 +355,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [deletingRecordId, setDeletingRecordId] = useState<string | null>(null);
+  const [editingRecordId, setEditingRecordId] = useState<string | null>(null);
 
   const fetchRecords = useCallback(async () => {
     setIsLoading(true);
@@ -401,6 +402,7 @@ export default function Home() {
     });
   }, [authStatus, fetchRecords]);
 
+  const isEditing = editingRecordId !== null;
   const canSave = content.trim().length > 0 && !isSaving;
   const today = getToday();
   const todayRecords = useMemo(
@@ -464,6 +466,8 @@ export default function Home() {
     setPasswordInput("");
     setPasswordError("");
     setRecords([]);
+    setEditingRecordId(null);
+    setContent("");
   }
 
   async function handleSave() {
@@ -477,32 +481,60 @@ export default function Home() {
     setErrorMessage("");
     setCopyMessage("");
 
-    const { error } = await supabase.from("records").insert({
-      category: selectedCategory,
-      content: trimmedContent,
-    });
+    const { error } = isEditing
+      ? await supabase
+          .from("records")
+          .update({
+            category: selectedCategory,
+            content: trimmedContent,
+          })
+          .eq("id", editingRecordId)
+      : await supabase.from("records").insert({
+          category: selectedCategory,
+          content: trimmedContent,
+        });
 
     if (error) {
-      backupRecord({
-        category: selectedCategory,
-        content: trimmedContent,
-      });
-      setErrorMessage(
-        `저장에 실패했습니다: ${error.message}. 이 브라우저에 백업을 남겼습니다.`,
-      );
+      if (isEditing) {
+        setErrorMessage(`수정에 실패했습니다. ${error.message}`);
+      } else {
+        backupRecord({
+          category: selectedCategory,
+          content: trimmedContent,
+        });
+        setErrorMessage(
+          `저장에 실패했습니다: ${error.message}. 이 브라우저에 백업을 남겼습니다.`,
+        );
+      }
       setIsSaving(false);
       return;
     }
 
     setContent("");
+    setEditingRecordId(null);
     setIsSaving(false);
-    setCopyMessage("저장되었습니다.");
+    setCopyMessage(isEditing ? "기록이 수정되었습니다." : "저장되었습니다.");
     await fetchRecords();
   }
 
   function handleTemplateSelect(template: string) {
     setContent(template);
     setCopyMessage("템플릿이 입력되었습니다.");
+    setErrorMessage("");
+  }
+
+  function handleEdit(record: LedgerRecord) {
+    setEditingRecordId(record.id);
+    setSelectedCategory(record.category);
+    setContent(record.content);
+    setCopyMessage("수정 모드입니다.");
+    setErrorMessage("");
+  }
+
+  function handleCancelEdit() {
+    setEditingRecordId(null);
+    setContent("");
+    setCopyMessage("수정을 취소했습니다.");
     setErrorMessage("");
   }
 
@@ -517,6 +549,11 @@ export default function Home() {
       setErrorMessage(`삭제에 실패했습니다: ${error.message}`);
       setDeletingRecordId(null);
       return;
+    }
+
+    if (editingRecordId === recordId) {
+      setEditingRecordId(null);
+      setContent("");
     }
 
     setCopyMessage("삭제되었습니다.");
@@ -661,7 +698,14 @@ export default function Home() {
           </div>
 
           <label className="mt-5 block">
-            <span className="text-sm font-semibold text-zinc-800">기록 내용</span>
+            <span className="flex items-center justify-between gap-2 text-sm font-semibold text-zinc-800">
+              기록 내용
+              {isEditing ? (
+                <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
+                  수정 모드
+                </span>
+              ) : null}
+            </span>
             <textarea
               value={content}
               onChange={(event) => setContent(event.target.value)}
@@ -677,7 +721,13 @@ export default function Home() {
               disabled={!canSave}
               className="touch-manipulation rounded-lg bg-zinc-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
             >
-              {isSaving ? "저장 중..." : "저장"}
+              {isSaving
+                ? isEditing
+                  ? "수정 중..."
+                  : "저장 중..."
+                : isEditing
+                  ? "수정 완료"
+                  : "저장"}
             </button>
             <button
               type="button"
@@ -688,6 +738,16 @@ export default function Home() {
               Markdown 복사
             </button>
           </div>
+
+          {isEditing ? (
+            <button
+              type="button"
+              onClick={handleCancelEdit}
+              className="mt-2 w-full touch-manipulation rounded-lg border border-zinc-300 bg-white px-5 py-3 text-sm font-semibold text-zinc-800 transition hover:border-zinc-950"
+            >
+              수정 취소
+            </button>
+          ) : null}
 
           <button
             type="button"
@@ -786,13 +846,20 @@ export default function Home() {
                           {record.category}
                         </span>
                       </div>
-                      <div className="grid w-full grid-cols-2 gap-2 sm:w-auto">
+                      <div className="grid w-full grid-cols-3 gap-2 sm:w-auto">
                         <button
                           type="button"
                           onClick={() => handleCopy(createMarkdown(record))}
                           className="touch-manipulation rounded-lg border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
                         >
                           Markdown 복사
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleEdit(record)}
+                          className="touch-manipulation rounded-lg border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
+                        >
+                          수정
                         </button>
                         <button
                           type="button"
