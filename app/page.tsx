@@ -633,6 +633,23 @@ export default function Home() {
     }
   }
 
+  function handleDownloadMarkdown(markdown: string, date: string) {
+    const blob = new Blob([markdown], {
+      type: "text/markdown;charset=utf-8",
+    });
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = objectUrl;
+    link.download = `${date}-life-ledger.md`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+    setCopyMessage("Markdown 파일이 다운로드되었습니다.");
+    setErrorMessage("");
+  }
+
   if (authStatus === "checking") {
     return (
       <main className="flex min-h-screen items-center justify-center bg-stone-50 px-4 py-8 text-zinc-950">
@@ -812,14 +829,24 @@ export default function Home() {
             </button>
           ) : null}
 
-          <button
-            type="button"
-            onClick={() => handleCopy(todayMarkdown)}
-            disabled={todayRecords.length === 0}
-            className="mt-2 w-full touch-manipulation rounded-lg border border-zinc-300 bg-zinc-50 px-5 py-3 text-sm font-semibold text-zinc-800 transition hover:border-zinc-950 hover:bg-white disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-300"
-          >
-            오늘 기록 전체 Markdown 복사
-          </button>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => handleCopy(todayMarkdown)}
+              disabled={todayRecords.length === 0}
+              className="touch-manipulation rounded-lg border border-zinc-300 bg-zinc-50 px-5 py-3 text-sm font-semibold text-zinc-800 transition hover:border-zinc-950 hover:bg-white disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-300"
+            >
+              오늘 기록 전체 Markdown 복사
+            </button>
+            <button
+              type="button"
+              onClick={() => handleDownloadMarkdown(todayMarkdown, today)}
+              disabled={todayRecords.length === 0}
+              className="touch-manipulation rounded-lg border border-zinc-300 bg-zinc-50 px-5 py-3 text-sm font-semibold text-zinc-800 transition hover:border-zinc-950 hover:bg-white disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-300"
+            >
+              오늘 기록 .md 다운로드
+            </button>
+          </div>
 
           {errorMessage ? (
             <p className="mt-3 text-sm font-medium text-red-700">
@@ -919,15 +946,31 @@ export default function Home() {
                     <h3 className="text-base font-bold text-zinc-950">
                       {group.date}
                     </h3>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleCopy(createDailyMarkdown(group.records, group.date))
-                      }
-                      className="touch-manipulation rounded-lg border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
-                    >
-                      이 날짜 Markdown 복사
-                    </button>
+                    <div className="grid w-full grid-cols-2 gap-2 sm:w-auto">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleCopy(
+                            createDailyMarkdown(group.records, group.date),
+                          )
+                        }
+                        className="touch-manipulation rounded-lg border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
+                      >
+                        이 날짜 Markdown 복사
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleDownloadMarkdown(
+                            createDailyMarkdown(group.records, group.date),
+                            group.date,
+                          )
+                        }
+                        className="touch-manipulation rounded-lg border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
+                      >
+                        이 날짜 .md 다운로드
+                      </button>
+                    </div>
                   </div>
 
                   <div className="mt-3 space-y-3">
