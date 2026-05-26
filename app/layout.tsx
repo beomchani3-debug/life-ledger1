@@ -1,10 +1,28 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
+  applicationName: "Life Ledger",
   title: "Life Ledger",
-  description: "오늘의 기록을 빠르게 남기고, Markdown으로 정리하세요.",
+  description: "개인 기록, 투자, 운동, 콘텐츠, 가치관을 빠르게 기록하는 앱",
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    title: "Life Ledger",
+    statusBarStyle: "black-translucent",
+  },
+  formatDetection: {
+    telephone: false,
+  },
+  icons: {
+    icon: [{ url: "/icon.svg", type: "image/svg+xml" }],
+    apple: [{ url: "/icon.svg", type: "image/svg+xml" }],
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#111827",
 };
 
 export default function RootLayout({
