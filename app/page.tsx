@@ -6,9 +6,11 @@ import { supabase } from "@/src/lib/supabase";
 
 const categories = ["일기", "투자", "지출", "운동", "콘텐츠", "가치관"] as const;
 const filterCategories = ["전체", ...categories] as const;
+const periodFilters = ["오늘", "어제", "이번 주", "전체"] as const;
 
 type Category = (typeof categories)[number];
 type CategoryFilter = (typeof filterCategories)[number];
+type PeriodFilter = (typeof periodFilters)[number];
 type AuthStatus = "checking" | "locked" | "unlocked";
 
 type RecordRow = {
@@ -230,8 +232,48 @@ function formatDate(value: string) {
   return `${year}-${month}-${day}`;
 }
 
+function formatLocalDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
 function getToday() {
-  return formatDate(new Date().toISOString());
+  return formatLocalDate(new Date());
+}
+
+function getYesterday() {
+  const date = new Date();
+  date.setDate(date.getDate() - 1);
+
+  return formatLocalDate(date);
+}
+
+function getWeekStart() {
+  const date = new Date();
+  const day = date.getDay();
+  const daysFromMonday = day === 0 ? 6 : day - 1;
+  date.setDate(date.getDate() - daysFromMonday);
+
+  return formatLocalDate(date);
+}
+
+function matchesPeriod(record: LedgerRecord, periodFilter: PeriodFilter) {
+  if (periodFilter === "전체") {
+    return true;
+  }
+
+  if (periodFilter === "오늘") {
+    return record.date === getToday();
+  }
+
+  if (periodFilter === "어제") {
+    return record.date === getYesterday();
+  }
+
+  return record.date >= getWeekStart() && record.date <= getToday();
 }
 
 function mapRecordRow(row: RecordRow): LedgerRecord {
@@ -314,6 +356,21 @@ ${connectionTags}
 ${recommendedTagLines}`;
 }
 
+function groupRecordsByDate(records: LedgerRecord[]) {
+  const groupedRecords = new Map<string, LedgerRecord[]>();
+
+  for (const record of records) {
+    const recordsForDate = groupedRecords.get(record.date) ?? [];
+    recordsForDate.push(record);
+    groupedRecords.set(record.date, recordsForDate);
+  }
+
+  return Array.from(groupedRecords.entries()).map(([date, dateRecords]) => ({
+    date,
+    records: dateRecords,
+  }));
+}
+
 function backupRecord(record: Pick<LedgerRecord, "category" | "content">) {
   const backupRecord = {
     id: crypto.randomUUID(),
@@ -347,6 +404,7 @@ export default function Home() {
   const [passwordError, setPasswordError] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<Category>("일기");
   const [selectedFilter, setSelectedFilter] = useState<CategoryFilter>("전체");
+  const [selectedPeriod, setSelectedPeriod] = useState<PeriodFilter>("전체");
   const [searchQuery, setSearchQuery] = useState("");
   const [content, setContent] = useState("");
   const [records, setRecords] = useState<LedgerRecord[]>([]);
@@ -416,14 +474,19 @@ export default function Home() {
       return records.filter((record) => {
         const matchesCategory =
           selectedFilter === "전체" || record.category === selectedFilter;
+        const matchesSelectedPeriod = matchesPeriod(record, selectedPeriod);
         const matchesSearch =
           !normalizedSearchQuery ||
           record.content.toLowerCase().includes(normalizedSearchQuery);
 
-        return matchesCategory && matchesSearch;
+        return matchesSelectedPeriod && matchesCategory && matchesSearch;
       });
     },
-    [records, searchQuery, selectedFilter],
+    [records, searchQuery, selectedFilter, selectedPeriod],
+  );
+  const groupedRecords = useMemo(
+    () => groupRecordsByDate(filteredRecords),
+    [filteredRecords],
   );
 
   const draftMarkdown = useMemo(
@@ -796,6 +859,27 @@ export default function Home() {
           </label>
 
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {periodFilters.map((period) => {
+              const isSelected = selectedPeriod === period;
+
+              return (
+                <button
+                  key={period}
+                  type="button"
+                  onClick={() => setSelectedPeriod(period)}
+                  className={`touch-manipulation rounded-lg border px-3 py-2.5 text-sm font-semibold transition ${
+                    isSelected
+                      ? "border-zinc-950 bg-zinc-950 text-white"
+                      : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300"
+                  }`}
+                >
+                  {period}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {filterCategories.map((category) => {
               const isSelected = selectedFilter === category;
 
@@ -825,72 +909,98 @@ export default function Home() {
               아직 저장된 기록이 없습니다.
             </div>
           ) : (
-            <div className="space-y-3">
-              {filteredRecords.map((record) => {
-                const recommendedTags = getRecommendedTags(record.content);
+            <div className="space-y-4">
+              {groupedRecords.map((group) => (
+                <section
+                  key={group.date}
+                  className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-base font-bold text-zinc-950">
+                      {group.date}
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleCopy(createDailyMarkdown(group.records, group.date))
+                      }
+                      className="touch-manipulation rounded-lg border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
+                    >
+                      이 날짜 Markdown 복사
+                    </button>
+                  </div>
 
-                return (
-                  <article
-                    key={record.id}
-                    className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <time
-                          className="text-sm font-semibold text-zinc-900"
-                          dateTime={record.createdAt}
-                        >
-                          {record.date}
-                        </time>
-                        <span className="rounded-full bg-stone-100 px-3 py-1 text-xs font-semibold text-zinc-700">
-                          {record.category}
-                        </span>
-                      </div>
-                      <div className="grid w-full grid-cols-3 gap-2 sm:w-auto">
-                        <button
-                          type="button"
-                          onClick={() => handleCopy(createMarkdown(record))}
-                          className="touch-manipulation rounded-lg border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
-                        >
-                          Markdown 복사
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleEdit(record)}
-                          className="touch-manipulation rounded-lg border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
-                        >
-                          수정
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(record.id)}
-                          disabled={deletingRecordId === record.id}
-                          className="touch-manipulation rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 transition hover:border-red-700 disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-300"
-                        >
-                          {deletingRecordId === record.id ? "삭제 중..." : "삭제"}
-                        </button>
-                      </div>
-                    </div>
+                  <div className="mt-3 space-y-3">
+                    {group.records.map((record) => {
+                      const recommendedTags = getRecommendedTags(record.content);
 
-                    {recommendedTags.length > 0 ? (
-                      <div className="mt-3 flex flex-wrap gap-1.5">
-                        {recommendedTags.map((tag) => (
-                          <span
-                            key={tag}
-                            className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-600"
-                          >
-                            [[{tag}]]
-                          </span>
-                        ))}
-                      </div>
-                    ) : null}
+                      return (
+                        <article
+                          key={record.id}
+                          className="rounded-lg border border-zinc-200 bg-stone-50 p-4"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <time
+                                className="text-sm font-semibold text-zinc-900"
+                                dateTime={record.createdAt}
+                              >
+                                {record.date}
+                              </time>
+                              <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-zinc-700">
+                                {record.category}
+                              </span>
+                            </div>
+                            <div className="grid w-full grid-cols-3 gap-2 sm:w-auto">
+                              <button
+                                type="button"
+                                onClick={() => handleCopy(createMarkdown(record))}
+                                className="touch-manipulation rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
+                              >
+                                Markdown 복사
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleEdit(record)}
+                                className="touch-manipulation rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
+                              >
+                                수정
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDelete(record.id)}
+                                disabled={deletingRecordId === record.id}
+                                className="touch-manipulation rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-semibold text-red-700 transition hover:border-red-700 disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-300"
+                              >
+                                {deletingRecordId === record.id
+                                  ? "삭제 중..."
+                                  : "삭제"}
+                              </button>
+                            </div>
+                          </div>
 
-                    <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-zinc-700">
-                      {record.content}
-                    </p>
-                  </article>
-                );
-              })}
+                          {recommendedTags.length > 0 ? (
+                            <div className="mt-3 flex flex-wrap gap-1.5">
+                              {recommendedTags.map((tag) => (
+                                <span
+                                  key={tag}
+                                  className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-zinc-600"
+                                >
+                                  [[{tag}]]
+                                </span>
+                              ))}
+                            </div>
+                          ) : null}
+
+                          <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-zinc-700">
+                            {record.content}
+                          </p>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
             </div>
           )}
         </section>
