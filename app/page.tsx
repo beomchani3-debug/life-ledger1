@@ -28,186 +28,16 @@ type LedgerRecord = {
   createdAt: string;
 };
 
-type QuickTemplate = {
-  label: string;
-  template: string;
-};
-
-type InvestmentTemplate = QuickTemplate & {
-  badge: string;
-};
-
 const BACKUP_STORAGE_KEY = "life-ledger:backup-records";
 const AUTH_STORAGE_KEY = "life-ledger:is-authenticated";
 const appPassword = process.env.NEXT_PUBLIC_APP_PASSWORD;
-const investmentTemplates: InvestmentTemplate[] = [
-  {
-    label: "매수",
-    badge: "매수",
-    template:
-      "[매수]\n종목:\n수량:\n단가:\n통화: KRW / USD / JPY\n총액:\n매수 이유:\n기대하는 점:\n리스크:",
-  },
-  {
-    label: "매도",
-    badge: "매도",
-    template:
-      "[매도]\n종목:\n수량:\n단가:\n통화: KRW / USD / JPY\n총액:\n매도 이유:\n수익/손실:\n느낀 점:",
-  },
-  {
-    label: "배당",
-    badge: "배당",
-    template:
-      "[배당]\n종목:\n배당금:\n통화: KRW / USD / JPY\n세전/세후:\n지급일:\n배당 메모:",
-  },
-  {
-    label: "종목 메모",
-    badge: "종목 메모",
-    template:
-      "[종목 메모]\n종목:\n관심 이유:\n장점:\n리스크:\n현재 판단: 매수 / 보류 / 관망 / 매도",
-  },
-  {
-    label: "시장 메모",
-    badge: "시장 메모",
-    template: "[시장 메모]\n시장 상황:\n금리/환율:\n관심 섹터:\n내 판단:\n이번 달 행동:",
-  },
-];
-const quickTemplates: Record<Category, QuickTemplate[]> = {
-  일기: [
-    {
-      label: "오늘 감정",
-      template: "[오늘 감정]\n감정:\n이유:\n몸 상태:\n남기고 싶은 말:",
-    },
-    {
-      label: "오늘 사건",
-      template: "[오늘 사건]\n무슨 일이 있었나:\n내 반응:\n배운 점:\n다음 행동:",
-    },
-    {
-      label: "오늘 배운 것",
-      template: "[오늘 배운 것]\n배운 내용:\n왜 중요했나:\n적용할 점:",
-    },
-    {
-      label: "내일 할 일",
-      template: "[내일 할 일]\n가장 중요한 일:\n작은 할 일:\n준비할 것:",
-    },
-  ],
-  투자: [
-    {
-      label: "매수 기록",
-      template: "[매수 기록]\n종목:\n수량:\n단가:\n총액:\n매수 이유:\n느낀 점:",
-    },
-    {
-      label: "매도 기록",
-      template: "[매도 기록]\n종목:\n수량:\n단가:\n총액:\n매도 이유:\n느낀 점:",
-    },
-    {
-      label: "배당 기록",
-      template: "[배당 기록]\n종목:\n배당금:\n입금일:\n재투자 여부:\n느낀 점:",
-    },
-    {
-      label: "투자 아이디어",
-      template: "[투자 아이디어]\n아이디어:\n근거:\n확인할 것:\n리스크:",
-    },
-    {
-      label: "종목 분석 메모",
-      template: "[종목 분석 메모]\n종목:\n사업 내용:\n좋은 점:\n걱정되는 점:\n다음 확인:",
-    },
-  ],
-  지출: [
-    {
-      label: "식비",
-      template: "[식비]\n장소:\n금액:\n결제수단:\n메모:",
-    },
-    {
-      label: "교통비",
-      template: "[교통비]\n이동:\n금액:\n결제수단:\n메모:",
-    },
-    {
-      label: "구독료",
-      template: "[구독료]\n서비스:\n금액:\n갱신일:\n유지 여부:",
-    },
-    {
-      label: "고정비",
-      template: "[고정비]\n항목:\n금액:\n납부일:\n줄일 방법:",
-    },
-    {
-      label: "용돈 사용",
-      template: "[용돈 사용]\n사용처:\n금액:\n이유:\n만족도:",
-    },
-    {
-      label: "기타 지출",
-      template: "[기타 지출]\n항목:\n금액:\n결제수단:\n메모:",
-    },
-  ],
-  운동: [
-    {
-      label: "오늘 운동",
-      template: "[오늘 운동]\n운동 부위:\n운동 내용:\n세트/횟수:\n느낀 점:",
-    },
-    {
-      label: "몸무게",
-      template: "[몸무게]\n몸무게:\n측정 시간:\n컨디션:\n메모:",
-    },
-    {
-      label: "컨디션",
-      template: "[컨디션]\n수면:\n피로도:\n에너지:\n운동 가능 여부:",
-    },
-    {
-      label: "통증/불균형",
-      template: "[통증/불균형]\n부위:\n증상:\n강도:\n가능한 원인:\n대응:",
-    },
-    {
-      label: "내일 운동 계획",
-      template: "[내일 운동 계획]\n운동 부위:\n목표:\n주의할 점:\n준비물:",
-    },
-  ],
-  콘텐츠: [
-    {
-      label: "쇼츠 아이디어",
-      template: "[쇼츠 아이디어]\n주제:\n훅:\n핵심 메시지:\n마무리:",
-    },
-    {
-      label: "대본 초안",
-      template: "[대본 초안]\n제목:\n도입:\n본문:\n마무리:",
-    },
-    {
-      label: "영상 프롬프트",
-      template: "[영상 프롬프트]\n장면:\n스타일:\n카메라:\n분위기:\n추가 요소:",
-    },
-    {
-      label: "나레이션",
-      template: "[나레이션]\n톤:\n문장:\n강조할 단어:\n수정 메모:",
-    },
-    {
-      label: "업로드 기록",
-      template: "[업로드 기록]\n플랫폼:\n제목:\n업로드 시간:\n메모:",
-    },
-    {
-      label: "조회수/성과 기록",
-      template: "[조회수/성과 기록]\n콘텐츠:\n조회수:\n반응:\n배운 점:",
-    },
-  ],
-  가치관: [
-    {
-      label: "오늘의 생각",
-      template: "[오늘의 생각]\n생각:\n이유:\n내게 주는 의미:",
-    },
-    {
-      label: "내가 중요하게 여기는 것",
-      template: "[내가 중요하게 여기는 것]\n가치:\n왜 중요한가:\n오늘의 행동:",
-    },
-    {
-      label: "인생 방향",
-      template: "[인생 방향]\n방향:\n현재 위치:\n다음 선택:",
-    },
-    {
-      label: "관계에서 느낀 점",
-      template: "[관계에서 느낀 점]\n상황:\n느낀 점:\n내가 배운 것:\n다음 태도:",
-    },
-    {
-      label: "요즘 믿고 있는 것",
-      template: "[요즘 믿고 있는 것]\n믿고 있는 것:\n그 이유:\n검증할 질문:",
-    },
-  ],
+const categoryHints: Record<Category, string> = {
+  일기: "오늘 느낀 감정, 사건, 생각을 자유롭게 적어보세요.",
+  투자: "매수, 매도, 배당, 종목 생각을 자유롭게 적어보세요.",
+  지출: "오늘 쓴 돈이나 고정비 변화를 적어보세요.",
+  운동: "운동 내용, 몸무게, 컨디션, 통증을 자유롭게 적어보세요.",
+  콘텐츠: "쇼츠 아이디어, 대본, 프롬프트, 업로드 기록을 적어보세요.",
+  가치관: "요즘 중요하게 생각하는 것, 인생 방향, 관계에서 느낀 점을 적어보세요.",
 };
 const tagRules: Array<{
   category: Category;
@@ -219,15 +49,15 @@ const tagRules: Array<{
   },
   {
     category: "운동",
-    keywords: ["운동", "등", "가슴", "어깨", "다리", "체중"],
+    keywords: ["운동", "등", "가슴", "어깨", "다리", "체중", "통증"],
   },
   {
     category: "콘텐츠",
-    keywords: ["쇼츠", "영상", "대본", "프롬프트", "곰벌레"],
+    keywords: ["쇼츠", "영상", "대본", "프롬프트", "곰벌레", "업로드"],
   },
   {
     category: "지출",
-    keywords: ["돈", "지출", "카드", "고정비"],
+    keywords: ["돈", "지출", "카드", "고정비", "구독료"],
   },
   {
     category: "일기",
@@ -235,7 +65,7 @@ const tagRules: Array<{
   },
   {
     category: "가치관",
-    keywords: ["의미", "가치관", "인생", "방향", "믿음"],
+    keywords: ["의미", "가치관", "인생", "방향", "관계", "믿음"],
   },
 ];
 const legacyCategoryMap = {
@@ -343,14 +173,6 @@ function getRecommendedTags(content: string) {
       ),
     )
     .map(({ category }) => category);
-}
-
-function getInvestmentType(content: string) {
-  return (
-    investmentTemplates.find((template) =>
-      content.includes(`[${template.badge}]`),
-    )?.badge ?? null
-  );
 }
 
 function createDailyMarkdown(records: LedgerRecord[], date: string) {
@@ -623,19 +445,6 @@ export default function Home() {
     await fetchRecords();
   }
 
-  function handleTemplateSelect(template: string) {
-    setContent(template);
-    setCopyMessage("템플릿이 입력되었습니다.");
-    setErrorMessage("");
-  }
-
-  function handleInvestmentTemplateSelect(template: string) {
-    setSelectedCategory("투자");
-    setContent(template);
-    setCopyMessage("투자 템플릿이 입력되었습니다.");
-    setErrorMessage("");
-  }
-
   function handleEdit(record: LedgerRecord) {
     setEditingRecordId(record.id);
     setSelectedCategory(record.category);
@@ -811,44 +620,6 @@ export default function Home() {
             </p>
           </div>
 
-          {selectedCategory === "투자" ? (
-            <div className="mt-5 space-y-3 rounded-lg border border-zinc-200 bg-zinc-50 p-4">
-              <p className="text-sm font-semibold text-zinc-800">
-                투자 기록 유형
-              </p>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-                {investmentTemplates.map((template) => (
-                  <button
-                    key={template.label}
-                    type="button"
-                    onClick={() =>
-                      handleInvestmentTemplateSelect(template.template)
-                    }
-                    className="touch-manipulation rounded-lg border border-zinc-200 bg-white px-3 py-2.5 text-sm font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
-                  >
-                    {template.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          <div className="mt-5 space-y-3">
-            <p className="text-sm font-semibold text-zinc-800">빠른 템플릿</p>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-              {quickTemplates[selectedCategory].map((template) => (
-                <button
-                  key={template.label}
-                  type="button"
-                  onClick={() => handleTemplateSelect(template.template)}
-                  className="touch-manipulation rounded-lg border border-zinc-200 bg-white px-3 py-2.5 text-sm font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
-                >
-                  {template.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
           <label className="mt-5 block">
             <span className="flex items-center justify-between gap-2 text-sm font-semibold text-zinc-800">
               기록 내용
@@ -858,6 +629,11 @@ export default function Home() {
                 </span>
               ) : null}
             </span>
+            <p className="mt-2 rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm leading-6 text-zinc-600">
+              형식은 자유롭게 적어도 됩니다. 나중에 검색과 태그로 정리할 수 있어요.
+              <br />
+              {categoryHints[selectedCategory]}
+            </p>
             <textarea
               value={content}
               onChange={(event) => setContent(event.target.value)}
@@ -1048,10 +824,6 @@ export default function Home() {
                   <div className="mt-3 space-y-3">
                     {group.records.map((record) => {
                       const recommendedTags = getRecommendedTags(record.content);
-                      const investmentType =
-                        record.category === "투자"
-                          ? getInvestmentType(record.content)
-                          : null;
 
                       return (
                         <article
@@ -1069,11 +841,6 @@ export default function Home() {
                               <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-zinc-700">
                                 {record.category}
                               </span>
-                              {investmentType ? (
-                                <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800">
-                                  {investmentType}
-                                </span>
-                              ) : null}
                             </div>
                             <div className="grid w-full grid-cols-3 gap-2 sm:w-auto">
                               <button
