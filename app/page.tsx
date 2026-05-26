@@ -24,7 +24,150 @@ type LedgerRecord = {
   createdAt: string;
 };
 
+type QuickTemplate = {
+  label: string;
+  template: string;
+};
+
 const BACKUP_STORAGE_KEY = "life-ledger:backup-records";
+const quickTemplates: Record<Category, QuickTemplate[]> = {
+  일기: [
+    {
+      label: "오늘 감정",
+      template: "[오늘 감정]\n감정:\n이유:\n몸 상태:\n남기고 싶은 말:",
+    },
+    {
+      label: "오늘 사건",
+      template: "[오늘 사건]\n무슨 일이 있었나:\n내 반응:\n배운 점:\n다음 행동:",
+    },
+    {
+      label: "오늘 배운 것",
+      template: "[오늘 배운 것]\n배운 내용:\n왜 중요했나:\n적용할 점:",
+    },
+    {
+      label: "내일 할 일",
+      template: "[내일 할 일]\n가장 중요한 일:\n작은 할 일:\n준비할 것:",
+    },
+  ],
+  투자: [
+    {
+      label: "매수 기록",
+      template: "[매수 기록]\n종목:\n수량:\n단가:\n총액:\n매수 이유:\n느낀 점:",
+    },
+    {
+      label: "매도 기록",
+      template: "[매도 기록]\n종목:\n수량:\n단가:\n총액:\n매도 이유:\n느낀 점:",
+    },
+    {
+      label: "배당 기록",
+      template: "[배당 기록]\n종목:\n배당금:\n입금일:\n재투자 여부:\n느낀 점:",
+    },
+    {
+      label: "투자 아이디어",
+      template: "[투자 아이디어]\n아이디어:\n근거:\n확인할 것:\n리스크:",
+    },
+    {
+      label: "종목 분석 메모",
+      template: "[종목 분석 메모]\n종목:\n사업 내용:\n좋은 점:\n걱정되는 점:\n다음 확인:",
+    },
+  ],
+  지출: [
+    {
+      label: "식비",
+      template: "[식비]\n장소:\n금액:\n결제수단:\n메모:",
+    },
+    {
+      label: "교통비",
+      template: "[교통비]\n이동:\n금액:\n결제수단:\n메모:",
+    },
+    {
+      label: "구독료",
+      template: "[구독료]\n서비스:\n금액:\n갱신일:\n유지 여부:",
+    },
+    {
+      label: "고정비",
+      template: "[고정비]\n항목:\n금액:\n납부일:\n줄일 방법:",
+    },
+    {
+      label: "용돈 사용",
+      template: "[용돈 사용]\n사용처:\n금액:\n이유:\n만족도:",
+    },
+    {
+      label: "기타 지출",
+      template: "[기타 지출]\n항목:\n금액:\n결제수단:\n메모:",
+    },
+  ],
+  운동: [
+    {
+      label: "오늘 운동",
+      template: "[오늘 운동]\n운동 부위:\n운동 내용:\n세트/횟수:\n느낀 점:",
+    },
+    {
+      label: "몸무게",
+      template: "[몸무게]\n몸무게:\n측정 시간:\n컨디션:\n메모:",
+    },
+    {
+      label: "컨디션",
+      template: "[컨디션]\n수면:\n피로도:\n에너지:\n운동 가능 여부:",
+    },
+    {
+      label: "통증/불균형",
+      template: "[통증/불균형]\n부위:\n증상:\n강도:\n가능한 원인:\n대응:",
+    },
+    {
+      label: "내일 운동 계획",
+      template: "[내일 운동 계획]\n운동 부위:\n목표:\n주의할 점:\n준비물:",
+    },
+  ],
+  콘텐츠: [
+    {
+      label: "쇼츠 아이디어",
+      template: "[쇼츠 아이디어]\n주제:\n훅:\n핵심 메시지:\n마무리:",
+    },
+    {
+      label: "대본 초안",
+      template: "[대본 초안]\n제목:\n도입:\n본문:\n마무리:",
+    },
+    {
+      label: "영상 프롬프트",
+      template: "[영상 프롬프트]\n장면:\n스타일:\n카메라:\n분위기:\n추가 요소:",
+    },
+    {
+      label: "나레이션",
+      template: "[나레이션]\n톤:\n문장:\n강조할 단어:\n수정 메모:",
+    },
+    {
+      label: "업로드 기록",
+      template: "[업로드 기록]\n플랫폼:\n제목:\n업로드 시간:\n메모:",
+    },
+    {
+      label: "조회수/성과 기록",
+      template: "[조회수/성과 기록]\n콘텐츠:\n조회수:\n반응:\n배운 점:",
+    },
+  ],
+  가치관: [
+    {
+      label: "오늘의 생각",
+      template: "[오늘의 생각]\n생각:\n이유:\n내게 주는 의미:",
+    },
+    {
+      label: "내가 중요하게 여기는 것",
+      template: "[내가 중요하게 여기는 것]\n가치:\n왜 중요한가:\n오늘의 행동:",
+    },
+    {
+      label: "인생 방향",
+      template: "[인생 방향]\n방향:\n현재 위치:\n다음 선택:",
+    },
+    {
+      label: "관계에서 느낀 점",
+      template: "[관계에서 느낀 점]\n상황:\n느낀 점:\n내가 배운 것:\n다음 태도:",
+    },
+    {
+      label: "요즘 믿고 있는 것",
+      template: "[요즘 믿고 있는 것]\n믿고 있는 것:\n그 이유:\n검증할 질문:",
+    },
+  ],
+};
 const tagRules: Array<{
   category: Category;
   keywords: string[];
@@ -145,18 +288,26 @@ function createDailyMarkdown(records: LedgerRecord[], date: string) {
   const recommendedTags = records.flatMap((record) =>
     getRecommendedTags(record.content),
   );
+  const uniqueRecommendedTags = Array.from(new Set<Category>(recommendedTags));
   const connectionTags = Array.from(
     new Set<Category>([...categories, ...recommendedTags]),
   )
     .map((category) => `- [[${category}]]`)
     .join("\n");
+  const recommendedTagLines =
+    uniqueRecommendedTags.length > 0
+      ? uniqueRecommendedTags.map((category) => `- [[${category}]]`).join("\n")
+      : "- ";
 
   return `# ${date} Life Ledger
 
 ${categorySections}
 
 ## 연결 태그
-${connectionTags}`;
+${connectionTags}
+
+## 추천 태그
+${recommendedTagLines}`;
 }
 
 function backupRecord(record: Pick<LedgerRecord, "category" | "content">) {
@@ -189,6 +340,7 @@ function backupRecord(record: Pick<LedgerRecord, "category" | "content">) {
 export default function Home() {
   const [selectedCategory, setSelectedCategory] = useState<Category>("일기");
   const [selectedFilter, setSelectedFilter] = useState<CategoryFilter>("전체");
+  const [searchQuery, setSearchQuery] = useState("");
   const [content, setContent] = useState("");
   const [records, setRecords] = useState<LedgerRecord[]>([]);
   const [copyMessage, setCopyMessage] = useState("");
@@ -230,11 +382,20 @@ export default function Home() {
     [records, today],
   );
   const filteredRecords = useMemo(
-    () =>
-      selectedFilter === "전체"
-        ? records
-        : records.filter((record) => record.category === selectedFilter),
-    [records, selectedFilter],
+    () => {
+      const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+
+      return records.filter((record) => {
+        const matchesCategory =
+          selectedFilter === "전체" || record.category === selectedFilter;
+        const matchesSearch =
+          !normalizedSearchQuery ||
+          record.content.toLowerCase().includes(normalizedSearchQuery);
+
+        return matchesCategory && matchesSearch;
+      });
+    },
+    [records, searchQuery, selectedFilter],
   );
 
   const draftMarkdown = useMemo(
@@ -284,6 +445,12 @@ export default function Home() {
     setIsSaving(false);
     setCopyMessage("저장되었습니다.");
     await fetchRecords();
+  }
+
+  function handleTemplateSelect(template: string) {
+    setContent(template);
+    setCopyMessage("템플릿이 입력되었습니다.");
+    setErrorMessage("");
   }
 
   async function handleDelete(recordId: string) {
@@ -357,6 +524,22 @@ export default function Home() {
             </p>
           </div>
 
+          <div className="mt-5 space-y-3">
+            <p className="text-sm font-semibold text-zinc-800">빠른 템플릿</p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {quickTemplates[selectedCategory].map((template) => (
+                <button
+                  key={template.label}
+                  type="button"
+                  onClick={() => handleTemplateSelect(template.template)}
+                  className="touch-manipulation rounded-lg border border-zinc-200 bg-white px-3 py-2.5 text-sm font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
+                >
+                  {template.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <label className="mt-5 block">
             <span className="text-sm font-semibold text-zinc-800">기록 내용</span>
             <textarea
@@ -420,6 +603,17 @@ export default function Home() {
               {filteredRecords.length}개
             </span>
           </div>
+
+          <label className="block">
+            <span className="text-sm font-semibold text-zinc-800">검색</span>
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="기록 내용 검색"
+              className="mt-2 w-full rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+            />
+          </label>
 
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {filterCategories.map((category) => {
