@@ -33,9 +33,44 @@ type QuickTemplate = {
   template: string;
 };
 
+type InvestmentTemplate = QuickTemplate & {
+  badge: string;
+};
+
 const BACKUP_STORAGE_KEY = "life-ledger:backup-records";
 const AUTH_STORAGE_KEY = "life-ledger:is-authenticated";
 const appPassword = process.env.NEXT_PUBLIC_APP_PASSWORD;
+const investmentTemplates: InvestmentTemplate[] = [
+  {
+    label: "매수",
+    badge: "매수",
+    template:
+      "[매수]\n종목:\n수량:\n단가:\n통화: KRW / USD / JPY\n총액:\n매수 이유:\n기대하는 점:\n리스크:",
+  },
+  {
+    label: "매도",
+    badge: "매도",
+    template:
+      "[매도]\n종목:\n수량:\n단가:\n통화: KRW / USD / JPY\n총액:\n매도 이유:\n수익/손실:\n느낀 점:",
+  },
+  {
+    label: "배당",
+    badge: "배당",
+    template:
+      "[배당]\n종목:\n배당금:\n통화: KRW / USD / JPY\n세전/세후:\n지급일:\n배당 메모:",
+  },
+  {
+    label: "종목 메모",
+    badge: "종목 메모",
+    template:
+      "[종목 메모]\n종목:\n관심 이유:\n장점:\n리스크:\n현재 판단: 매수 / 보류 / 관망 / 매도",
+  },
+  {
+    label: "시장 메모",
+    badge: "시장 메모",
+    template: "[시장 메모]\n시장 상황:\n금리/환율:\n관심 섹터:\n내 판단:\n이번 달 행동:",
+  },
+];
 const quickTemplates: Record<Category, QuickTemplate[]> = {
   일기: [
     {
@@ -308,6 +343,14 @@ function getRecommendedTags(content: string) {
       ),
     )
     .map(({ category }) => category);
+}
+
+function getInvestmentType(content: string) {
+  return (
+    investmentTemplates.find((template) =>
+      content.includes(`[${template.badge}]`),
+    )?.badge ?? null
+  );
 }
 
 function createDailyMarkdown(records: LedgerRecord[], date: string) {
@@ -586,6 +629,13 @@ export default function Home() {
     setErrorMessage("");
   }
 
+  function handleInvestmentTemplateSelect(template: string) {
+    setSelectedCategory("투자");
+    setContent(template);
+    setCopyMessage("투자 템플릿이 입력되었습니다.");
+    setErrorMessage("");
+  }
+
   function handleEdit(record: LedgerRecord) {
     setEditingRecordId(record.id);
     setSelectedCategory(record.category);
@@ -760,6 +810,28 @@ export default function Home() {
               {selectedCategory}
             </p>
           </div>
+
+          {selectedCategory === "투자" ? (
+            <div className="mt-5 space-y-3 rounded-lg border border-zinc-200 bg-zinc-50 p-4">
+              <p className="text-sm font-semibold text-zinc-800">
+                투자 기록 유형
+              </p>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                {investmentTemplates.map((template) => (
+                  <button
+                    key={template.label}
+                    type="button"
+                    onClick={() =>
+                      handleInvestmentTemplateSelect(template.template)
+                    }
+                    className="touch-manipulation rounded-lg border border-zinc-200 bg-white px-3 py-2.5 text-sm font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
+                  >
+                    {template.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           <div className="mt-5 space-y-3">
             <p className="text-sm font-semibold text-zinc-800">빠른 템플릿</p>
@@ -976,6 +1048,10 @@ export default function Home() {
                   <div className="mt-3 space-y-3">
                     {group.records.map((record) => {
                       const recommendedTags = getRecommendedTags(record.content);
+                      const investmentType =
+                        record.category === "투자"
+                          ? getInvestmentType(record.content)
+                          : null;
 
                       return (
                         <article
@@ -993,6 +1069,11 @@ export default function Home() {
                               <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-zinc-700">
                                 {record.category}
                               </span>
+                              {investmentType ? (
+                                <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800">
+                                  {investmentType}
+                                </span>
+                              ) : null}
                             </div>
                             <div className="grid w-full grid-cols-3 gap-2 sm:w-auto">
                               <button
