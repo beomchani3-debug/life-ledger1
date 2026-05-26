@@ -4,8 +4,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/src/lib/supabase";
 
 const categories = ["일기", "투자", "지출", "운동", "콘텐츠", "가치관"] as const;
+const filterCategories = ["전체", ...categories] as const;
 
 type Category = (typeof categories)[number];
+type CategoryFilter = (typeof filterCategories)[number];
 
 type RecordRow = {
   id: string;
@@ -23,6 +25,35 @@ type LedgerRecord = {
 };
 
 const BACKUP_STORAGE_KEY = "life-ledger:backup-records";
+const tagRules: Array<{
+  category: Category;
+  keywords: string[];
+}> = [
+  {
+    category: "투자",
+    keywords: ["주식", "배당", "SCHD", "리플", "XRP", "매수", "매도"],
+  },
+  {
+    category: "운동",
+    keywords: ["운동", "등", "가슴", "어깨", "다리", "체중"],
+  },
+  {
+    category: "콘텐츠",
+    keywords: ["쇼츠", "영상", "대본", "프롬프트", "곰벌레"],
+  },
+  {
+    category: "지출",
+    keywords: ["돈", "지출", "카드", "고정비"],
+  },
+  {
+    category: "일기",
+    keywords: ["감정", "외로움", "불안", "생각", "하루"],
+  },
+  {
+    category: "가치관",
+    keywords: ["의미", "가치관", "인생", "방향", "믿음"],
+  },
+];
 const legacyCategoryMap = {
   신앙: "가치관",
 } as const satisfies Record<string, Category>;
@@ -78,6 +109,56 @@ function createMarkdown(
 ${record.content}`;
 }
 
+function getRecommendedTags(content: string) {
+  const normalizedContent = content.toLowerCase();
+
+  return tagRules
+    .filter(({ keywords }) =>
+      keywords.some((keyword) =>
+        normalizedContent.includes(keyword.toLowerCase()),
+      ),
+    )
+    .map(({ category }) => category);
+}
+
+function createDailyMarkdown(records: LedgerRecord[], date: string) {
+  const recordsByCategory = new Map<Category, LedgerRecord[]>(
+    categories.map((category) => [category, []]),
+  );
+
+  for (const record of records) {
+    recordsByCategory.get(record.category)?.push(record);
+  }
+
+  const categorySections = categories
+    .map((category) => {
+      const categoryRecords = recordsByCategory.get(category) ?? [];
+      const recordLines =
+        categoryRecords.length > 0
+          ? categoryRecords.map((record) => `- ${record.content}`).join("\n")
+          : "- ";
+
+      return `## ${category}\n${recordLines}`;
+    })
+    .join("\n\n");
+
+  const recommendedTags = records.flatMap((record) =>
+    getRecommendedTags(record.content),
+  );
+  const connectionTags = Array.from(
+    new Set<Category>([...categories, ...recommendedTags]),
+  )
+    .map((category) => `- [[${category}]]`)
+    .join("\n");
+
+  return `# ${date} Life Ledger
+
+${categorySections}
+
+## 연결 태그
+${connectionTags}`;
+}
+
 function backupRecord(record: Pick<LedgerRecord, "category" | "content">) {
   const backupRecord = {
     id: crypto.randomUUID(),
@@ -107,12 +188,14 @@ function backupRecord(record: Pick<LedgerRecord, "category" | "content">) {
 
 export default function Home() {
   const [selectedCategory, setSelectedCategory] = useState<Category>("일기");
+  const [selectedFilter, setSelectedFilter] = useState<CategoryFilter>("전체");
   const [content, setContent] = useState("");
   const [records, setRecords] = useState<LedgerRecord[]>([]);
   const [copyMessage, setCopyMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [deletingRecordId, setDeletingRecordId] = useState<string | null>(null);
 
   const fetchRecords = useCallback(async () => {
     setIsLoading(true);
@@ -141,15 +224,32 @@ export default function Home() {
   }, [fetchRecords]);
 
   const canSave = content.trim().length > 0 && !isSaving;
+  const today = getToday();
+  const todayRecords = useMemo(
+    () => records.filter((record) => record.date === today),
+    [records, today],
+  );
+  const filteredRecords = useMemo(
+    () =>
+      selectedFilter === "전체"
+        ? records
+        : records.filter((record) => record.category === selectedFilter),
+    [records, selectedFilter],
+  );
 
   const draftMarkdown = useMemo(
     () =>
       createMarkdown({
-        date: getToday(),
+        date: today,
         category: selectedCategory,
         content: content.trim(),
       }),
-    [content, selectedCategory],
+    [content, selectedCategory, today],
+  );
+
+  const todayMarkdown = useMemo(
+    () => createDailyMarkdown(todayRecords, today),
+    [todayRecords, today],
   );
 
   async function handleSave() {
@@ -182,6 +282,25 @@ export default function Home() {
 
     setContent("");
     setIsSaving(false);
+    setCopyMessage("저장되었습니다.");
+    await fetchRecords();
+  }
+
+  async function handleDelete(recordId: string) {
+    setDeletingRecordId(recordId);
+    setErrorMessage("");
+    setCopyMessage("");
+
+    const { error } = await supabase.from("records").delete().eq("id", recordId);
+
+    if (error) {
+      setErrorMessage(`삭제에 실패했습니다: ${error.message}`);
+      setDeletingRecordId(null);
+      return;
+    }
+
+    setCopyMessage("삭제되었습니다.");
+    setDeletingRecordId(null);
     await fetchRecords();
   }
 
@@ -267,6 +386,15 @@ export default function Home() {
             </button>
           </div>
 
+          <button
+            type="button"
+            onClick={() => handleCopy(todayMarkdown)}
+            disabled={todayRecords.length === 0}
+            className="mt-2 w-full touch-manipulation rounded-lg border border-zinc-300 bg-zinc-50 px-5 py-3 text-sm font-semibold text-zinc-800 transition hover:border-zinc-950 hover:bg-white disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-300"
+          >
+            오늘 기록 전체 Markdown 복사
+          </button>
+
           {errorMessage ? (
             <p className="mt-3 text-sm font-medium text-red-700">
               {errorMessage}
@@ -289,50 +417,99 @@ export default function Home() {
               </p>
             </div>
             <span className="rounded-full bg-zinc-200 px-3 py-1 text-xs font-semibold text-zinc-700">
-              {records.length}개
+              {filteredRecords.length}개
             </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {filterCategories.map((category) => {
+              const isSelected = selectedFilter === category;
+
+              return (
+                <button
+                  key={category}
+                  type="button"
+                  onClick={() => setSelectedFilter(category)}
+                  className={`touch-manipulation rounded-lg border px-3 py-2.5 text-sm font-semibold transition ${
+                    isSelected
+                      ? "border-zinc-950 bg-zinc-950 text-white"
+                      : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300"
+                  }`}
+                >
+                  {category}
+                </button>
+              );
+            })}
           </div>
 
           {isLoading ? (
             <div className="rounded-lg border border-dashed border-zinc-300 bg-white p-6 text-center text-sm text-zinc-500">
               불러오는 중...
             </div>
-          ) : records.length === 0 ? (
+          ) : filteredRecords.length === 0 ? (
             <div className="rounded-lg border border-dashed border-zinc-300 bg-white p-6 text-center text-sm text-zinc-500">
               아직 저장된 기록이 없습니다.
             </div>
           ) : (
             <div className="space-y-3">
-              {records.map((record) => (
-                <article
-                  key={record.id}
-                  className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <time
-                        className="text-sm font-semibold text-zinc-900"
-                        dateTime={record.createdAt}
-                      >
-                        {record.date}
-                      </time>
-                      <span className="rounded-full bg-stone-100 px-3 py-1 text-xs font-semibold text-zinc-700">
-                        {record.category}
-                      </span>
+              {filteredRecords.map((record) => {
+                const recommendedTags = getRecommendedTags(record.content);
+
+                return (
+                  <article
+                    key={record.id}
+                    className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <time
+                          className="text-sm font-semibold text-zinc-900"
+                          dateTime={record.createdAt}
+                        >
+                          {record.date}
+                        </time>
+                        <span className="rounded-full bg-stone-100 px-3 py-1 text-xs font-semibold text-zinc-700">
+                          {record.category}
+                        </span>
+                      </div>
+                      <div className="grid w-full grid-cols-2 gap-2 sm:w-auto">
+                        <button
+                          type="button"
+                          onClick={() => handleCopy(createMarkdown(record))}
+                          className="touch-manipulation rounded-lg border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
+                        >
+                          Markdown 복사
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(record.id)}
+                          disabled={deletingRecordId === record.id}
+                          className="touch-manipulation rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 transition hover:border-red-700 disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-300"
+                        >
+                          {deletingRecordId === record.id ? "삭제 중..." : "삭제"}
+                        </button>
+                      </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleCopy(createMarkdown(record))}
-                      className="touch-manipulation rounded-lg border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
-                    >
-                      Markdown 복사
-                    </button>
-                  </div>
-                  <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-zinc-700">
-                    {record.content}
-                  </p>
-                </article>
-              ))}
+
+                    {recommendedTags.length > 0 ? (
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        {recommendedTags.map((tag) => (
+                          <span
+                            key={tag}
+                            className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-600"
+                          >
+                            [[{tag}]]
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-zinc-700">
+                      {record.content}
+                    </p>
+                  </article>
+                );
+              })}
             </div>
           )}
         </section>
