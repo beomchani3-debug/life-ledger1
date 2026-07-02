@@ -2,9 +2,23 @@
 
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { supabase } from "@/src/lib/supabase";
 
-const categories = ["일기", "투자", "지출", "운동", "콘텐츠", "가치관"] as const;
+const inputCategories = ["일기", "투자", "운동", "공부/콘텐츠", "가치관"] as const;
+const categories = [...inputCategories, "지출"] as const;
 const filterCategories = ["전체", ...categories] as const;
 const periodFilters = ["오늘", "어제", "이번 주", "전체"] as const;
 
@@ -28,8 +42,138 @@ type LedgerRecord = {
   createdAt: string;
 };
 
+type InvestmentData = {
+  type: "investment";
+  judgment: string;
+  emotion: { tags: string[]; note: string };
+  principle: string;
+};
+
+type WorkoutSet = {
+  bodyPart: string;
+  exercise: string;
+  weight: string;
+  reps: string;
+  duration: string;
+  intensity: string;
+};
+
+type WorkoutSetInput = WorkoutSet & { id: string };
+
+type WorkoutData = {
+  type: "workout";
+  sets: WorkoutSet[];
+  memo: string;
+  bodyFlags: string[];
+};
+
+type AppView = "main" | "principles" | "weekly" | "study" | "fitness";
+
+type Principle = {
+  id: string;
+  text: string;
+  date: string;
+  archived: boolean;
+  createdAt: string;
+};
+
+type WeeklyReviewData = {
+  type: "weekly_review";
+  weekId: string;
+  weekStart: string;
+  weekEnd: string;
+  q1: string;
+  q2: string;
+  q3: string;
+};
+
+type WeeklyReview = {
+  id: string;
+  weekId: string;
+  weekStart: string;
+  weekEnd: string;
+  q1: string;
+  q2: string;
+  q3: string;
+  createdAt: string;
+};
+
+type StudyNote = {
+  id: string;
+  text: string;
+  date: string;
+  memorized: boolean;
+  createdAt: string;
+};
+
+type InbodyRecord = {
+  id: string;
+  date: string;
+  weight: number | null;
+  muscleMass: number | null;
+  fatPercentage: number | null;
+  createdAt: string;
+};
+
+type WeeklySummary = {
+  daysRecorded: number;
+  dayDots: { date: string; categories: Category[] }[];
+  workoutCount: number;
+  bodyPartSets: Record<string, number>;
+  bodyFlagFreq: Record<string, number>;
+  investmentCount: number;
+  emotionTagDist: Record<string, number>;
+  newPrinciples: string[];
+  topKeywords: string[];
+};
+
+const WORKOUT_BODY_PARTS = [
+  "가슴",
+  "등",
+  "어깨",
+  "팔",
+  "하체",
+  "코어",
+  "유산소",
+] as const;
+
+const BODY_PART_COLORS: Record<string, string> = {
+  가슴: "#18181b",
+  등: "#2563eb",
+  어깨: "#16a34a",
+  팔: "#ca8a04",
+  하체: "#dc2626",
+  코어: "#9333ea",
+  유산소: "#0891b2",
+};
+
+const WORKOUT_BODY_FLAGS = [
+  "발가락 통증",
+  "통풍 증상",
+  "거북목/어깨 뻐근",
+  "수면 부족",
+  "컨디션 좋음",
+  "없음",
+] as const;
+
 const BACKUP_STORAGE_KEY = "life-ledger:backup-records";
 const AUTH_STORAGE_KEY = "life-ledger:is-authenticated";
+const PRINCIPLES_SEEDED_KEY = "life-ledger:principles-seeded";
+const INITIAL_PRINCIPLES = [
+  { text: "프리장 급락만 보고 즉흥 매매하지 않기", date: "2026-06-23" },
+  {
+    text: '시장이 위축될 때는 "지금 사야 한다"보다 "무엇을 기다릴 것인가"를 먼저 정하기',
+    date: "2026-06-23",
+  },
+  {
+    text: "악재가 남아 있는 구간에서는 포지션 크기를 줄이고 관찰 비중을 높이기",
+    date: "2026-06-23",
+  },
+  {
+    text: "매수 전 확인: 급락이 단기 이벤트 반응인가? 본장에서도 이어지는가? 핵심 원인은 무엇인가? 손절 기준은 어디인가? 기회인가 감정인가?",
+    date: "2026-06-23",
+  },
+] as const;
 const appPassword = process.env.NEXT_PUBLIC_APP_PASSWORD;
 const koreanDateFormatter = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Seoul",
@@ -62,10 +206,10 @@ const keywordStopWords = new Set([
 const categoryHints: Record<Category, string> = {
   일기: "오늘 느낀 감정, 사건, 생각을 자유롭게 적어보세요.",
   투자: "매수, 매도, 배당, 종목 생각을 자유롭게 적어보세요.",
-  지출: "오늘 쓴 돈이나 고정비 변화를 적어보세요.",
   운동: "운동 내용, 몸무게, 컨디션, 통증을 자유롭게 적어보세요.",
-  콘텐츠: "쇼츠 아이디어, 대본, 프롬프트, 업로드 기록을 적어보세요.",
+  "공부/콘텐츠": "자격증 공부, 쇼츠 아이디어, 대본, 프롬프트, 업로드 기록을 적어보세요.",
   가치관: "요즘 중요하게 생각하는 것, 인생 방향, 관계에서 느낀 점을 적어보세요.",
+  지출: "오늘 쓴 돈이나 고정비 변화를 적어보세요.",
 };
 const tagRules: Array<{
   category: Category;
@@ -80,8 +224,8 @@ const tagRules: Array<{
     keywords: ["운동", "등", "가슴", "어깨", "다리", "체중", "통증"],
   },
   {
-    category: "콘텐츠",
-    keywords: ["쇼츠", "영상", "대본", "프롬프트", "곰벌레", "업로드"],
+    category: "공부/콘텐츠",
+    keywords: ["쇼츠", "영상", "대본", "프롬프트", "곰벌레", "업로드", "공부", "자격증", "에너지관리"],
   },
   {
     category: "지출",
@@ -98,7 +242,70 @@ const tagRules: Array<{
 ];
 const legacyCategoryMap = {
   신앙: "가치관",
+  콘텐츠: "공부/콘텐츠",
 } as const satisfies Record<string, Category>;
+
+const INVESTMENT_EMOTION_CHIPS = [
+  "계획됨",
+  "불안",
+  "FOMO",
+  "확신",
+  "긴장",
+  "지루함",
+  "후회",
+] as const;
+
+function parseInvestmentContent(content: string): InvestmentData | null {
+  try {
+    const parsed = JSON.parse(content) as unknown;
+
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "type" in parsed &&
+      (parsed as { type: unknown }).type === "investment"
+    ) {
+      return parsed as InvestmentData;
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function formatInvestmentBody(data: InvestmentData): string {
+  const parts: string[] = [];
+
+  if (data.judgment.trim()) {
+    parts.push(`### 판단\n- ${data.judgment.trim()}`);
+  }
+
+  const hasEmotionTags = data.emotion.tags.length > 0;
+  const hasEmotionNote = data.emotion.note.trim().length > 0;
+
+  if (hasEmotionTags || hasEmotionNote) {
+    const emotionLines: string[] = [];
+
+    if (hasEmotionTags) {
+      emotionLines.push(
+        `- 태그: ${data.emotion.tags.map((t) => `#${t}`).join(" ")}`,
+      );
+    }
+
+    if (hasEmotionNote) {
+      emotionLines.push(`- ${data.emotion.note.trim()}`);
+    }
+
+    parts.push(`### 감정\n${emotionLines.join("\n")}`);
+  }
+
+  if (data.principle.trim()) {
+    parts.push(`### 다음 원칙\n- ${data.principle.trim()}`);
+  }
+
+  return parts.length > 0 ? parts.join("\n\n") : "- ";
+}
 
 function isCategory(value: string): value is Category {
   return categories.includes(value as Category);
@@ -152,6 +359,40 @@ function getKoreanWeekStartDate() {
   koreanNow.setDate(koreanNow.getDate() - daysFromMonday);
 
   return formatLocalDate(koreanNow);
+}
+
+function getWeekMondayDate(weekOffset: number = 0): string {
+  const now = new Date();
+  const koreanNow = new Date(
+    now.toLocaleString("en-US", { timeZone: "Asia/Seoul" }),
+  );
+  const day = koreanNow.getDay();
+  const daysFromMonday = day === 0 ? 6 : day - 1;
+
+  koreanNow.setDate(koreanNow.getDate() - daysFromMonday + weekOffset * 7);
+
+  return formatLocalDate(koreanNow);
+}
+
+function getWeekSundayDate(mondayDate: string): string {
+  const d = new Date(mondayDate + "T00:00:00");
+
+  d.setDate(d.getDate() + 6);
+
+  return formatLocalDate(d);
+}
+
+function getISOWeekId(mondayDate: string): string {
+  const date = new Date(mondayDate + "T00:00:00");
+  const jan4 = new Date(date.getFullYear(), 0, 4);
+  const startOfWeek1 = new Date(jan4);
+
+  startOfWeek1.setDate(jan4.getDate() - ((jan4.getDay() + 6) % 7));
+
+  const weekNum =
+    Math.floor((date.getTime() - startOfWeek1.getTime()) / (7 * 86400000)) + 1;
+
+  return `${date.getFullYear()}-W${String(weekNum).padStart(2, "0")}`;
 }
 
 function getWeeklyReviewTitle(date: string) {
@@ -209,13 +450,44 @@ function mapRecordRow(row: RecordRow): LedgerRecord {
 function createMarkdown(
   record: Pick<LedgerRecord, "date" | "category" | "content">,
 ) {
+  const body =
+    record.category === "투자"
+      ? (() => {
+          const data = parseInvestmentContent(record.content);
+          return data ? formatInvestmentBody(data) : record.content;
+        })()
+      : record.category === "운동"
+        ? (() => {
+            const data = parseWorkoutContent(record.content);
+            return data ? formatWorkoutBody(data) : record.content;
+          })()
+        : record.content;
+
   return `# ${record.date} 기록
 
 ## 카테고리
 - ${record.category}
 
 ## 내용
-${record.content}`;
+${body}`;
+}
+
+function extractRecordText(record: LedgerRecord): string {
+  if (record.category === "투자") {
+    const data = parseInvestmentContent(record.content);
+    if (data) {
+      return [data.judgment, data.emotion.note, data.principle]
+        .filter(Boolean)
+        .join(" ");
+    }
+  }
+
+  if (record.category === "운동") {
+    const data = parseWorkoutContent(record.content);
+    if (data) return data.memo;
+  }
+
+  return record.content;
 }
 
 function getRecommendedTags(content: string) {
@@ -232,38 +504,81 @@ function getRecommendedTags(content: string) {
 
 function createDailyMarkdown(records: LedgerRecord[], date: string) {
   const recordsByCategory = new Map<Category, LedgerRecord[]>(
-    categories.map((category) => [category, []]),
+    inputCategories.map((category) => [category, []]),
   );
 
   for (const record of records) {
     recordsByCategory.get(record.category)?.push(record);
   }
 
-  const categorySections = categories
+  const categorySections = inputCategories
     .map((category) => {
       const categoryRecords = recordsByCategory.get(category) ?? [];
-      const recordLines =
-        categoryRecords.length > 0
-          ? categoryRecords.map((record) => `- ${record.content}`).join("\n")
-          : "- ";
+      let recordLines: string;
+
+      if (categoryRecords.length === 0) {
+        recordLines = "- ";
+      } else if (category === "투자") {
+        recordLines = categoryRecords
+          .map((record) => {
+            const data = parseInvestmentContent(record.content);
+            return data ? formatInvestmentBody(data) : `- ${record.content}`;
+          })
+          .join("\n\n");
+      } else if (category === "운동") {
+        recordLines = categoryRecords
+          .map((record) => {
+            const data = parseWorkoutContent(record.content);
+            return data ? formatWorkoutBody(data) : `- ${record.content}`;
+          })
+          .join("\n\n");
+      } else {
+        recordLines = categoryRecords
+          .map((record) => `- ${record.content}`)
+          .join("\n");
+      }
 
       return `## ${category}\n${recordLines}`;
     })
     .join("\n\n");
 
-  const recommendedTags = records.flatMap((record) =>
-    getRecommendedTags(record.content),
+  const categoriesWithRecords = inputCategories.filter(
+    (cat) => (recordsByCategory.get(cat)?.length ?? 0) > 0,
   );
-  const uniqueRecommendedTags = Array.from(new Set<Category>(recommendedTags));
-  const connectionTags = Array.from(
-    new Set<Category>([...categories, ...recommendedTags]),
-  )
-    .map((category) => `- [[${category}]]`)
-    .join("\n");
-  const recommendedTagLines =
-    uniqueRecommendedTags.length > 0
-      ? uniqueRecommendedTags.map((category) => `- [[${category}]]`).join("\n")
+  const connectionTags =
+    categoriesWithRecords.length > 0
+      ? categoriesWithRecords.map((cat) => `- [[${cat}]]`).join("\n")
       : "- ";
+
+  const allText = records.map((r) => extractRecordText(r)).join(" ");
+  const stopWords = new Set([
+    "이","그","저","것","수","때","를","을","의","에","가","은","는","도","와",
+    "으로","에서","부터","까지","만","도","이다","하다","있다","없다","되다","않다",
+    "이번","오늘","그냥","진짜","좀","더","다","또","안","못",
+  ]);
+
+  function tokenize(text: string) {
+    return text.split(/[\s\,\.\!\?\:\;\(\)\[\]\{\}\"\'\/\\]+/).filter(Boolean);
+  }
+
+  const wordFreq = new Map<string, number>();
+  for (const word of tokenize(allText)) {
+    if (word.length < 2 || stopWords.has(word)) continue;
+    wordFreq.set(word, (wordFreq.get(word) ?? 0) + 1);
+  }
+
+  const emotionKeywords = Array.from(wordFreq.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([word]) => `#${word}`)
+    .join(" ");
+
+  const coreLinks = Array.from(wordFreq.entries())
+    .filter(([word, count]) => count >= 2 && word.length >= 3)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([word]) => `[[${word}]]`)
+    .join(", ");
 
   return `# ${date} Life Ledger
 
@@ -272,8 +587,11 @@ ${categorySections}
 ## 연결 태그
 ${connectionTags}
 
-## 추천 태그
-${recommendedTagLines}`;
+## 감정 키워드
+${emotionKeywords || "-"}
+
+## 핵심 링크
+${coreLinks || "-"}`;
 }
 
 function extractFrequentKeywords(records: LedgerRecord[]) {
@@ -300,20 +618,39 @@ function extractFrequentKeywords(records: LedgerRecord[]) {
 function createWeeklyReviewMarkdown(records: LedgerRecord[], today: string) {
   const weekTitle = getWeeklyReviewTitle(today);
   const recordsByCategory = new Map<Category, LedgerRecord[]>(
-    categories.map((category) => [category, []]),
+    inputCategories.map((category) => [category, []]),
   );
 
   for (const record of records) {
     recordsByCategory.get(record.category)?.push(record);
   }
 
-  const categorySections = categories
+  const categorySections = inputCategories
     .map((category) => {
       const categoryRecords = recordsByCategory.get(category) ?? [];
-      const recordLines =
-        categoryRecords.length > 0
-          ? categoryRecords.map((record) => `- ${record.content}`).join("\n")
-          : "- 기록 없음";
+      let recordLines: string;
+
+      if (categoryRecords.length === 0) {
+        recordLines = "- 기록 없음";
+      } else if (category === "투자") {
+        recordLines = categoryRecords
+          .map((record) => {
+            const data = parseInvestmentContent(record.content);
+            return data ? formatInvestmentBody(data) : `- ${record.content}`;
+          })
+          .join("\n\n");
+      } else if (category === "운동") {
+        recordLines = categoryRecords
+          .map((record) => {
+            const data = parseWorkoutContent(record.content);
+            return data ? formatWorkoutBody(data) : `- ${record.content}`;
+          })
+          .join("\n\n");
+      } else {
+        recordLines = categoryRecords
+          .map((record) => `- ${record.content}`)
+          .join("\n");
+      }
 
       return `### ${category}\n${recordLines}`;
     })
@@ -345,9 +682,8 @@ ${keywordSection}
 - [[Life Ledger]]
 - [[일기]]
 - [[투자]]
-- [[지출]]
 - [[운동]]
-- [[콘텐츠]]
+- [[공부/콘텐츠]]
 - [[가치관]]`;
 }
 
@@ -364,6 +700,372 @@ function groupRecordsByDate(records: LedgerRecord[]) {
     date,
     records: dateRecords,
   }));
+}
+
+function parseWorkoutContent(content: string): WorkoutData | null {
+  try {
+    const parsed = JSON.parse(content) as unknown;
+
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "type" in parsed &&
+      (parsed as { type: unknown }).type === "workout"
+    ) {
+      return parsed as WorkoutData;
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function formatWorkoutBody(data: WorkoutData): string {
+  const parts: string[] = [];
+
+  const validSets = data.sets.filter(
+    (s) => s.exercise.trim() || s.duration.trim(),
+  );
+
+  if (validSets.length > 0) {
+    const header = "| 부위 | 운동 | 중량/횟수 |\n| --- | --- | --- |";
+    const rows = validSets.map((s) => {
+      const metric =
+        s.bodyPart === "유산소"
+          ? [s.duration && `${s.duration}분`, s.intensity && `강도 ${s.intensity}`]
+              .filter(Boolean)
+              .join(" ")
+          : [s.weight && `${s.weight}kg`, s.reps && `${s.reps}회`]
+              .filter(Boolean)
+              .join(" ");
+
+      return `| ${s.bodyPart} | ${s.exercise} | ${metric} |`;
+    });
+
+    parts.push(`### 운동 기록\n${header}\n${rows.join("\n")}`);
+  }
+
+  if (data.bodyFlags.length > 0) {
+    const tags = data.bodyFlags
+      .map((f) => `- #${f.replace(/[\s/]+/g, "")}`)
+      .join("\n");
+
+    parts.push(`### 몸 상태\n${tags}`);
+  }
+
+  if (data.memo.trim()) {
+    parts.push(`### 메모\n${data.memo.trim()}`);
+  }
+
+  return parts.length > 0 ? parts.join("\n\n") : "- ";
+}
+
+function parsePrincipleRow(row: RecordRow): Principle {
+  try {
+    const parsed = JSON.parse(row.content) as {
+      text: string;
+      archived: boolean;
+      date: string;
+    };
+
+    return {
+      id: row.id,
+      text: parsed.text ?? "",
+      date: parsed.date ?? formatDate(row.created_at),
+      archived: parsed.archived ?? false,
+      createdAt: row.created_at,
+    };
+  } catch {
+    return {
+      id: row.id,
+      text: row.content,
+      date: formatDate(row.created_at),
+      archived: false,
+      createdAt: row.created_at,
+    };
+  }
+}
+
+function parseStudyNoteRow(row: RecordRow): StudyNote {
+  try {
+    const parsed = JSON.parse(row.content) as {
+      text: string;
+      memorized: boolean;
+      date: string;
+    };
+
+    return {
+      id: row.id,
+      text: parsed.text ?? "",
+      date: parsed.date ?? formatDate(row.created_at),
+      memorized: parsed.memorized ?? false,
+      createdAt: row.created_at,
+    };
+  } catch {
+    return {
+      id: row.id,
+      text: row.content,
+      date: formatDate(row.created_at),
+      memorized: false,
+      createdAt: row.created_at,
+    };
+  }
+}
+
+function createStudyNotesMarkdown(studyNotes: StudyNote[]): string {
+  const active = studyNotes.filter((n) => !n.memorized);
+  const done = studyNotes.filter((n) => n.memorized);
+  const activeLines =
+    active.map((n) => `- ${n.text} (${n.date})`).join("\n") || "- 없음";
+  const doneLines =
+    done.map((n) => `- ${n.text} (${n.date})`).join("\n") || "- 없음";
+
+  return `# 에너지관리기능사 암기 노트\n\n## 미암기\n${activeLines}\n\n## 암기 완료\n${doneLines}`;
+}
+
+function createPrinciplesMarkdown(principles: Principle[]): string {
+  const active = principles.filter((p) => !p.archived);
+  const lines = active.map((p) => `- [ ] ${p.text} (${p.date})`).join("\n");
+
+  return `# 투자 원칙\n${lines || "- 원칙 없음"}`;
+}
+
+function computeWeeklySummary(
+  records: LedgerRecord[],
+  principles: Principle[],
+  weekStart: string,
+  weekEnd: string,
+): WeeklySummary {
+  const weekRecords = records.filter(
+    (r) => r.date >= weekStart && r.date <= weekEnd,
+  );
+
+  const dateSet = new Set(weekRecords.map((r) => r.date));
+
+  const allDays: string[] = [];
+  const startDate = new Date(weekStart + "T00:00:00");
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(startDate);
+    d.setDate(startDate.getDate() + i);
+    allDays.push(formatLocalDate(d));
+  }
+
+  const dayDots = allDays.map((date) => ({
+    date,
+    categories: Array.from(
+      new Set(
+        weekRecords.filter((r) => r.date === date).map((r) => r.category),
+      ),
+    ),
+  }));
+
+  const workoutRecords = weekRecords.filter((r) => r.category === "운동");
+  const bodyPartSets: Record<string, number> = {};
+  const bodyFlagFreq: Record<string, number> = {};
+
+  for (const rec of workoutRecords) {
+    const data = parseWorkoutContent(rec.content);
+    if (!data) continue;
+    for (const set of data.sets) {
+      if (set.exercise.trim() || set.duration.trim()) {
+        bodyPartSets[set.bodyPart] = (bodyPartSets[set.bodyPart] ?? 0) + 1;
+      }
+    }
+    for (const flag of data.bodyFlags) {
+      bodyFlagFreq[flag] = (bodyFlagFreq[flag] ?? 0) + 1;
+    }
+  }
+
+  const investmentRecords = weekRecords.filter((r) => r.category === "투자");
+  const emotionTagDist: Record<string, number> = {};
+
+  for (const rec of investmentRecords) {
+    const data = parseInvestmentContent(rec.content);
+    if (!data) continue;
+    for (const tag of data.emotion.tags) {
+      emotionTagDist[tag] = (emotionTagDist[tag] ?? 0) + 1;
+    }
+  }
+
+  const newPrinciples = principles
+    .filter((p) => p.date >= weekStart && p.date <= weekEnd && !p.archived)
+    .map((p) => p.text);
+
+  const allText = weekRecords.map((r) => extractRecordText(r)).join(" ");
+  const stopWordsLocal = new Set([
+    "이", "그", "저", "것", "수", "때", "를", "을", "의", "에", "가", "은",
+    "는", "도", "와", "으로", "에서", "부터", "까지", "만", "이다", "하다",
+    "있다", "없다", "되다", "않다", "이번", "오늘", "그냥", "진짜", "좀",
+    "더", "다", "또", "안", "못",
+  ]);
+  const wordFreq = new Map<string, number>();
+  for (const word of allText.split(/[\s,.\!\?\:\;\(\)\[\]\{\}\"\'\/\\]+/).filter(Boolean)) {
+    if (word.length < 2 || stopWordsLocal.has(word)) continue;
+    wordFreq.set(word, (wordFreq.get(word) ?? 0) + 1);
+  }
+  const topKeywords = Array.from(wordFreq.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([word]) => word);
+
+  return {
+    daysRecorded: dateSet.size,
+    dayDots,
+    workoutCount: workoutRecords.length,
+    bodyPartSets,
+    bodyFlagFreq,
+    investmentCount: investmentRecords.length,
+    emotionTagDist,
+    newPrinciples,
+    topKeywords,
+  };
+}
+
+function formatWeeklyReviewFullMarkdown(
+  weekId: string,
+  weekStart: string,
+  weekEnd: string,
+  summary: WeeklySummary,
+  q1: string,
+  q2: string,
+  q3: string,
+): string {
+  const bodyPartLines =
+    Object.entries(summary.bodyPartSets)
+      .map(([part, count]) => `- ${part}: ${count}세트`)
+      .join("\n") || "- 없음";
+
+  const bodyFlagLines =
+    Object.entries(summary.bodyFlagFreq)
+      .map(([flag, count]) => `- ${flag}: ${count}회`)
+      .join("\n") || "- 없음";
+
+  const emotionTagLines =
+    Object.entries(summary.emotionTagDist)
+      .sort((a, b) => b[1] - a[1])
+      .map(([tag, count]) => `- #${tag}: ${count}회`)
+      .join("\n") || "- 없음";
+
+  const principleLines =
+    summary.newPrinciples.length > 0
+      ? summary.newPrinciples.map((p) => `- ${p}`).join("\n")
+      : "- 없음";
+
+  const keywordLine =
+    summary.topKeywords.length > 0
+      ? summary.topKeywords.map((w) => `#${w}`).join(" ")
+      : "-";
+
+  const [yearStr, mStr] = weekStart.split("-");
+  const [, , dStr] = weekStart.split("-");
+  const weekOfMonth = Math.ceil(Number(dStr) / 7);
+  const titleText = `${yearStr}년 ${Number(mStr)}월 ${weekOfMonth}주차`;
+
+  return `# ${titleText} 주간 회고 (${weekId})
+기간: ${weekStart} ~ ${weekEnd}
+
+## 자동 요약
+
+### 기록한 날
+${summary.daysRecorded}/7일
+
+### 운동
+횟수: ${summary.workoutCount}회
+
+**부위별 세트 수**
+${bodyPartLines}
+
+**몸 상태 플래그**
+${bodyFlagLines}
+
+### 투자
+기록: ${summary.investmentCount}회
+
+**감정 태그 분포**
+${emotionTagLines}
+
+**이번 주 추가된 원칙**
+${principleLines}
+
+### 이번 주 감정 키워드
+${keywordLine}
+
+## 회고
+
+### 이번 주 가장 잘한 결정
+${q1 || "-"}
+
+### 반복하고 싶지 않은 것
+${q2 || "-"}
+
+### 다음 주에 딱 하나만 바꾼다면
+${q3 || "-"}
+
+## 연결 태그
+- [[주간회고]]
+- [[Life Ledger]]`;
+}
+
+function parseWeeklyReviewRow(row: RecordRow): WeeklyReview {
+  try {
+    const parsed = JSON.parse(row.content) as WeeklyReviewData;
+
+    return {
+      id: row.id,
+      weekId: parsed.weekId ?? "",
+      weekStart: parsed.weekStart ?? "",
+      weekEnd: parsed.weekEnd ?? "",
+      q1: parsed.q1 ?? "",
+      q2: parsed.q2 ?? "",
+      q3: parsed.q3 ?? "",
+      createdAt: row.created_at,
+    };
+  } catch {
+    return {
+      id: row.id,
+      weekId: "",
+      weekStart: "",
+      weekEnd: "",
+      q1: row.content,
+      q2: "",
+      q3: "",
+      createdAt: row.created_at,
+    };
+  }
+}
+
+function parseInbodyRow(row: RecordRow): InbodyRecord {
+  try {
+    const parsed = JSON.parse(row.content) as {
+      date: string;
+      weight: string;
+      muscleMass: string;
+      fatPercentage: string;
+    };
+    const toNum = (s: string) => {
+      const n = parseFloat(s);
+      return isNaN(n) ? null : n;
+    };
+
+    return {
+      id: row.id,
+      date: parsed.date ?? formatDate(row.created_at),
+      weight: parsed.weight ? toNum(parsed.weight) : null,
+      muscleMass: parsed.muscleMass ? toNum(parsed.muscleMass) : null,
+      fatPercentage: parsed.fatPercentage ? toNum(parsed.fatPercentage) : null,
+      createdAt: row.created_at,
+    };
+  } catch {
+    return {
+      id: row.id,
+      date: formatDate(row.created_at),
+      weight: null,
+      muscleMass: null,
+      fatPercentage: null,
+      createdAt: row.created_at,
+    };
+  }
 }
 
 function backupRecord(record: Pick<LedgerRecord, "category" | "content">) {
@@ -409,6 +1111,59 @@ export default function Home() {
   const [isSaving, setIsSaving] = useState(false);
   const [deletingRecordId, setDeletingRecordId] = useState<string | null>(null);
   const [editingRecordId, setEditingRecordId] = useState<string | null>(null);
+  const [investmentJudgment, setInvestmentJudgment] = useState("");
+  const [investmentEmotionTags, setInvestmentEmotionTags] = useState<string[]>(
+    [],
+  );
+  const [investmentEmotionNote, setInvestmentEmotionNote] = useState("");
+  const [investmentPrinciple, setInvestmentPrinciple] = useState("");
+  const [workoutSets, setWorkoutSets] = useState<WorkoutSetInput[]>([
+    {
+      id: crypto.randomUUID(),
+      bodyPart: "",
+      exercise: "",
+      weight: "",
+      reps: "",
+      duration: "",
+      intensity: "",
+    },
+  ]);
+  const [workoutMemo, setWorkoutMemo] = useState("");
+  const [workoutBodyFlags, setWorkoutBodyFlags] = useState<string[]>([]);
+  const [workoutExerciseFocus, setWorkoutExerciseFocus] = useState<
+    string | null
+  >(null);
+  const [view, setView] = useState<AppView>("main");
+  const [principles, setPrinciples] = useState<Principle[]>([]);
+  const [checklistOpen, setChecklistOpen] = useState(false);
+  const [checkedPrincipleIds, setCheckedPrincipleIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [editingPrincipleId, setEditingPrincipleId] = useState<string | null>(
+    null,
+  );
+  const [editingPrincipleText, setEditingPrincipleText] = useState("");
+  const [weeklyReviews, setWeeklyReviews] = useState<WeeklyReview[]>([]);
+  const [weeklyReviewQ1, setWeeklyReviewQ1] = useState("");
+  const [weeklyReviewQ2, setWeeklyReviewQ2] = useState("");
+  const [weeklyReviewQ3, setWeeklyReviewQ3] = useState("");
+  const [weeklyReviewListMode, setWeeklyReviewListMode] = useState(false);
+  const [selectedWeeklyReview, setSelectedWeeklyReview] =
+    useState<WeeklyReview | null>(null);
+  const [isSavingReview, setIsSavingReview] = useState(false);
+  const [studyNotes, setStudyNotes] = useState<StudyNote[]>([]);
+  const [studyNote, setStudyNote] = useState("");
+  const [editingStudyNoteId, setEditingStudyNoteId] = useState<string | null>(
+    null,
+  );
+  const [editingStudyNoteText, setEditingStudyNoteText] = useState("");
+  const [inbodyRecords, setInbodyRecords] = useState<InbodyRecord[]>([]);
+  const [inbodyDate, setInbodyDate] = useState(() => getToday());
+  const [inbodyWeight, setInbodyWeight] = useState("");
+  const [inbodyMuscle, setInbodyMuscle] = useState("");
+  const [inbodyFat, setInbodyFat] = useState("");
+  const [isSavingInbody, setIsSavingInbody] = useState(false);
+  const [selectedFitnessExercise, setSelectedFitnessExercise] = useState("");
 
   const fetchRecords = useCallback(async () => {
     setIsLoading(true);
@@ -426,8 +1181,60 @@ export default function Home() {
       return;
     }
 
-    setRecords((data ?? []).map((row) => mapRecordRow(row as RecordRow)));
+    const rawData = (data ?? []) as RecordRow[];
+    const principleRows = rawData.filter((row) => row.category === "원칙");
+    const weeklyReviewRows = rawData.filter(
+      (row) => row.category === "주간회고",
+    );
+    const studyNoteRows = rawData.filter((row) => row.category === "공부노트");
+    const inbodyRows = rawData.filter((row) => row.category === "인바디");
+    const recordRows = rawData.filter(
+      (row) =>
+        row.category !== "원칙" &&
+        row.category !== "주간회고" &&
+        row.category !== "공부노트" &&
+        row.category !== "인바디",
+    );
+    const fetchedPrinciples = principleRows.map(parsePrincipleRow);
+
+    setRecords(recordRows.map(mapRecordRow));
+    setPrinciples(fetchedPrinciples);
+    setWeeklyReviews(weeklyReviewRows.map(parseWeeklyReviewRow));
+    setStudyNotes(studyNoteRows.map(parseStudyNoteRow));
+    setInbodyRecords(inbodyRows.map(parseInbodyRow));
     setIsLoading(false);
+
+    if (fetchedPrinciples.length === 0) {
+      const alreadySeeded = window.localStorage.getItem(PRINCIPLES_SEEDED_KEY);
+
+      if (!alreadySeeded) {
+        window.localStorage.setItem(PRINCIPLES_SEEDED_KEY, "true");
+
+        const results = await Promise.all(
+          INITIAL_PRINCIPLES.map((item) =>
+            supabase
+              .from("records")
+              .insert({
+                category: "원칙",
+                content: JSON.stringify({
+                  type: "principle",
+                  text: item.text,
+                  archived: false,
+                  date: item.date,
+                }),
+              })
+              .select("id, category, content, created_at")
+              .single(),
+          ),
+        );
+
+        const seeded = results
+          .filter((r) => r.data !== null)
+          .map((r) => parsePrincipleRow(r.data as RecordRow));
+
+        setPrinciples(seeded);
+      }
+    }
   }, []);
 
   useEffect(() => {
@@ -455,8 +1262,58 @@ export default function Home() {
     });
   }, [authStatus, fetchRecords]);
 
+  useEffect(() => {
+    if (authStatus !== "unlocked" || !("Notification" in window)) return;
+
+    const now = new Date(
+      new Date().toLocaleString("en-US", { timeZone: "Asia/Seoul" }),
+    );
+    if (now.getDay() !== 0) return;
+
+    const target = new Date(now);
+    target.setHours(20, 0, 0, 0);
+    const msUntil = target.getTime() - now.getTime();
+    if (msUntil < 0 || msUntil > 4 * 3600000) return;
+
+    const timer = setTimeout(() => {
+      if (Notification.permission === "granted") {
+        new Notification("Life Ledger", { body: "이번 주 회고할 시간입니다." });
+      }
+    }, Math.max(0, msUntil));
+
+    return () => clearTimeout(timer);
+  }, [authStatus]);
+
+  useEffect(() => {
+    if (view !== "weekly" || weeklyReviewListMode) return;
+    const existing = weeklyReviews.find((r) => r.weekId === currentWeekId);
+    if (existing) {
+      setWeeklyReviewQ1(existing.q1);
+      setWeeklyReviewQ2(existing.q2);
+      setWeeklyReviewQ3(existing.q3);
+    }
+    // Only fire when entering weekly write view
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, weeklyReviewListMode]);
+
   const isEditing = editingRecordId !== null;
-  const canSave = content.trim().length > 0 && !isSaving;
+  const investmentHasContent =
+    investmentJudgment.trim().length > 0 ||
+    investmentEmotionTags.length > 0 ||
+    investmentEmotionNote.trim().length > 0 ||
+    investmentPrinciple.trim().length > 0;
+  const workoutHasContent =
+    workoutSets.some(
+      (s) => s.exercise.trim() || s.weight.trim() || s.reps.trim() || s.duration.trim(),
+    ) ||
+    workoutMemo.trim().length > 0 ||
+    workoutBodyFlags.length > 0;
+  const canSave =
+    (selectedCategory === "투자"
+      ? investmentHasContent
+      : selectedCategory === "운동"
+        ? workoutHasContent
+        : content.trim().length > 0) && !isSaving;
   const today = getToday();
   const todayRecords = useMemo(
     () => records.filter((record) => record.date === today),
@@ -491,15 +1348,203 @@ export default function Home() {
     [filteredRecords],
   );
 
-  const draftMarkdown = useMemo(
-    () =>
-      createMarkdown({
-        date: today,
-        category: selectedCategory,
-        content: content.trim(),
-      }),
-    [content, selectedCategory, today],
+  const currentWeekMonday = getWeekMondayDate(0);
+  const currentWeekSunday = getWeekSundayDate(currentWeekMonday);
+  const currentWeekId = getISOWeekId(currentWeekMonday);
+  const lastWeekId = getISOWeekId(getWeekMondayDate(-1));
+
+  const weeklyReviewExists = weeklyReviews.some(
+    (r) => r.weekId === currentWeekId,
   );
+  const hasMissingWeeklyReview = !weeklyReviews.some(
+    (r) => r.weekId === lastWeekId,
+  );
+
+  const weeklySummary = useMemo(
+    () =>
+      computeWeeklySummary(
+        records,
+        principles,
+        currentWeekMonday,
+        currentWeekSunday,
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [records, principles, currentWeekMonday, currentWeekSunday],
+  );
+
+  const recentExercisesByBodyPart = useMemo(() => {
+    const map = new Map<string, string[]>();
+
+    for (const record of records) {
+      if (record.category === "운동") {
+        const data = parseWorkoutContent(record.content);
+
+        if (data) {
+          for (const set of data.sets) {
+            if (set.exercise.trim() && set.bodyPart) {
+              const existing = map.get(set.bodyPart) ?? [];
+
+              if (!existing.includes(set.exercise.trim())) {
+                map.set(set.bodyPart, [set.exercise.trim(), ...existing]);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return map;
+  }, [records]);
+
+  const weeklyBodyPartData = useMemo(() => {
+    return [-3, -2, -1, 0].map((offset) => {
+      const monday = getWeekMondayDate(offset);
+      const sunday = getWeekSundayDate(monday);
+      const weekLabel = `${Number(monday.slice(5, 7))}/${Number(monday.slice(8, 10))}`;
+      const weekRecords = records.filter(
+        (r) => r.category === "운동" && r.date >= monday && r.date <= sunday,
+      );
+      const counts: Record<string, number> = {};
+
+      for (const rec of weekRecords) {
+        const data = parseWorkoutContent(rec.content);
+        if (!data) continue;
+        for (const set of data.sets) {
+          if (set.exercise.trim() || set.duration.trim()) {
+            counts[set.bodyPart] = (counts[set.bodyPart] ?? 0) + 1;
+          }
+        }
+      }
+
+      return { week: weekLabel, ...counts };
+    });
+  }, [records]);
+
+  const fitnessExerciseNames = useMemo(() => {
+    const names = new Set<string>();
+
+    for (const rec of records) {
+      if (rec.category !== "운동") continue;
+      const data = parseWorkoutContent(rec.content);
+      if (!data) continue;
+      for (const set of data.sets) {
+        if (set.exercise.trim() && set.bodyPart !== "유산소" && set.weight) {
+          names.add(set.exercise.trim());
+        }
+      }
+    }
+
+    return Array.from(names).sort();
+  }, [records]);
+
+  const exerciseWeightData = useMemo(() => {
+    if (!selectedFitnessExercise) return [];
+    const dateMax = new Map<string, number>();
+
+    for (const rec of records) {
+      if (rec.category !== "운동") continue;
+      const data = parseWorkoutContent(rec.content);
+      if (!data) continue;
+      for (const set of data.sets) {
+        if (set.exercise.trim() === selectedFitnessExercise && set.weight) {
+          const w = parseFloat(set.weight);
+          if (!isNaN(w)) {
+            dateMax.set(rec.date, Math.max(dateMax.get(rec.date) ?? 0, w));
+          }
+        }
+      }
+    }
+
+    return Array.from(dateMax.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, weight]) => ({
+        date: `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`,
+        중량: weight,
+      }));
+  }, [records, selectedFitnessExercise]);
+
+  const weeklyFlagData = useMemo(() => {
+    const flagKeys = ["발가락 통증", "거북목/어깨 뻐근"] as const;
+
+    return [-7, -6, -5, -4, -3, -2, -1, 0].map((offset) => {
+      const monday = getWeekMondayDate(offset);
+      const sunday = getWeekSundayDate(monday);
+      const weekLabel = `${Number(monday.slice(5, 7))}/${Number(monday.slice(8, 10))}`;
+      const weekRecords = records.filter(
+        (r) => r.category === "운동" && r.date >= monday && r.date <= sunday,
+      );
+      const counts: Record<string, number> = { "발가락 통증": 0, "거북목/어깨 뻐근": 0 };
+
+      for (const rec of weekRecords) {
+        const data = parseWorkoutContent(rec.content);
+        if (!data) continue;
+        for (const flag of data.bodyFlags) {
+          if ((flagKeys as readonly string[]).includes(flag)) {
+            counts[flag] = (counts[flag] ?? 0) + 1;
+          }
+        }
+      }
+
+      return { week: weekLabel, ...counts };
+    });
+  }, [records]);
+
+  const inbodyChartData = useMemo(() => {
+    return [...inbodyRecords]
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map((r) => ({
+        date: `${Number(r.date.slice(5, 7))}/${Number(r.date.slice(8, 10))}`,
+        체중: r.weight,
+        골격근량: r.muscleMass,
+        체지방률: r.fatPercentage,
+      }));
+  }, [inbodyRecords]);
+
+  const draftMarkdown = useMemo(() => {
+    if (selectedCategory === "투자") {
+      const data: InvestmentData = {
+        type: "investment",
+        judgment: investmentJudgment.trim(),
+        emotion: {
+          tags: investmentEmotionTags,
+          note: investmentEmotionNote.trim(),
+        },
+        principle: investmentPrinciple.trim(),
+      };
+
+      return `# ${today} 기록\n\n## 카테고리\n- 투자\n\n## 내용\n${formatInvestmentBody(data)}`;
+    }
+
+    if (selectedCategory === "운동") {
+      const data: WorkoutData = {
+        type: "workout",
+        sets: workoutSets
+          .filter((s) => s.exercise.trim() || s.duration.trim())
+          .map(({ id: _id, ...rest }) => rest),
+        memo: workoutMemo.trim(),
+        bodyFlags: workoutBodyFlags,
+      };
+
+      return `# ${today} 기록\n\n## 카테고리\n- 운동\n\n## 내용\n${formatWorkoutBody(data)}`;
+    }
+
+    return createMarkdown({
+      date: today,
+      category: selectedCategory,
+      content: content.trim(),
+    });
+  }, [
+    content,
+    selectedCategory,
+    today,
+    investmentJudgment,
+    investmentEmotionTags,
+    investmentEmotionNote,
+    investmentPrinciple,
+    workoutSets,
+    workoutMemo,
+    workoutBodyFlags,
+  ]);
 
   const todayMarkdown = useMemo(
     () => createDailyMarkdown(todayRecords, today),
@@ -537,13 +1582,47 @@ export default function Home() {
     setRecords([]);
     setEditingRecordId(null);
     setContent("");
+    setStudyNote("");
+    setInvestmentJudgment("");
+    setInvestmentEmotionTags([]);
+    setInvestmentEmotionNote("");
+    setInvestmentPrinciple("");
+    resetWorkoutState();
   }
 
   async function handleSave() {
-    const trimmedContent = content.trim();
+    let saveContent: string;
 
-    if (!trimmedContent) {
-      return;
+    if (selectedCategory === "투자") {
+      if (!investmentHasContent) return;
+
+      const data: InvestmentData = {
+        type: "investment",
+        judgment: investmentJudgment.trim(),
+        emotion: {
+          tags: investmentEmotionTags,
+          note: investmentEmotionNote.trim(),
+        },
+        principle: investmentPrinciple.trim(),
+      };
+
+      saveContent = JSON.stringify(data);
+    } else if (selectedCategory === "운동") {
+      if (!workoutHasContent) return;
+
+      const data: WorkoutData = {
+        type: "workout",
+        sets: workoutSets
+          .filter((s) => s.exercise.trim() || s.duration.trim())
+          .map(({ id: _id, ...rest }) => rest),
+        memo: workoutMemo.trim(),
+        bodyFlags: workoutBodyFlags,
+      };
+
+      saveContent = JSON.stringify(data);
+    } else {
+      saveContent = content.trim();
+      if (!saveContent) return;
     }
 
     setIsSaving(true);
@@ -555,12 +1634,12 @@ export default function Home() {
           .from("records")
           .update({
             category: selectedCategory,
-            content: trimmedContent,
+            content: saveContent,
           })
           .eq("id", editingRecordId)
       : await supabase.from("records").insert({
           category: selectedCategory,
-          content: trimmedContent,
+          content: saveContent,
         });
 
     if (error) {
@@ -569,7 +1648,7 @@ export default function Home() {
       } else {
         backupRecord({
           category: selectedCategory,
-          content: trimmedContent,
+          content: saveContent,
         });
         setErrorMessage(
           `저장에 실패했습니다: ${error.message}. 이 브라우저에 백업을 남겼습니다.`,
@@ -580,16 +1659,177 @@ export default function Home() {
     }
 
     setContent("");
+    setStudyNote("");
+    setInvestmentJudgment("");
+    setInvestmentEmotionTags([]);
+    setInvestmentEmotionNote("");
+    setInvestmentPrinciple("");
+    setWorkoutSets([
+      {
+        id: crypto.randomUUID(),
+        bodyPart: "",
+        exercise: "",
+        weight: "",
+        reps: "",
+        duration: "",
+        intensity: "",
+      },
+    ]);
+    setWorkoutMemo("");
+    setWorkoutBodyFlags([]);
     setEditingRecordId(null);
     setIsSaving(false);
     setCopyMessage(isEditing ? "기록이 수정되었습니다." : "저장되었습니다.");
+
+    if (!isEditing && selectedCategory === "공부/콘텐츠" && studyNote.trim()) {
+      const noteContent = JSON.stringify({
+        type: "study_note",
+        text: studyNote.trim(),
+        memorized: false,
+        date: today,
+      });
+
+      const { data: noteData } = await supabase
+        .from("records")
+        .insert({ category: "공부노트", content: noteContent })
+        .select("id, category, content, created_at")
+        .single();
+
+      if (noteData) {
+        setStudyNotes((prev) => [
+          parseStudyNoteRow(noteData as RecordRow),
+          ...prev,
+        ]);
+      }
+    }
+
+    if (!isEditing && selectedCategory === "투자" && investmentPrinciple.trim()) {
+      const principleContent = JSON.stringify({
+        type: "principle",
+        text: investmentPrinciple.trim(),
+        archived: false,
+        date: today,
+      });
+
+      const { data: principleData } = await supabase
+        .from("records")
+        .insert({ category: "원칙", content: principleContent })
+        .select("id, category, content, created_at")
+        .single();
+
+      if (principleData) {
+        setPrinciples((prev) => [
+          parsePrincipleRow(principleData as RecordRow),
+          ...prev,
+        ]);
+      }
+    }
+
     await fetchRecords();
+  }
+
+  function addWorkoutSet() {
+    setWorkoutSets((prev) => {
+      const last = prev[prev.length - 1];
+
+      return [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          bodyPart: last?.bodyPart ?? "",
+          exercise: last?.exercise ?? "",
+          weight: "",
+          reps: "",
+          duration: "",
+          intensity: "",
+        },
+      ];
+    });
+  }
+
+  function removeWorkoutSet(id: string) {
+    setWorkoutSets((prev) => prev.filter((s) => s.id !== id));
+  }
+
+  function updateWorkoutSet(
+    id: string,
+    field: keyof Omit<WorkoutSetInput, "id">,
+    value: string,
+  ) {
+    setWorkoutSets((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, [field]: value } : s)),
+    );
+  }
+
+  function resetWorkoutState() {
+    setWorkoutSets([
+      {
+        id: crypto.randomUUID(),
+        bodyPart: "",
+        exercise: "",
+        weight: "",
+        reps: "",
+        duration: "",
+        intensity: "",
+      },
+    ]);
+    setWorkoutMemo("");
+    setWorkoutBodyFlags([]);
   }
 
   function handleEdit(record: LedgerRecord) {
     setEditingRecordId(record.id);
     setSelectedCategory(record.category);
-    setContent(record.content);
+
+    if (record.category === "투자") {
+      const data = parseInvestmentContent(record.content);
+
+      setContent("");
+      setInvestmentJudgment(data ? data.judgment : record.content);
+      setInvestmentEmotionTags(data ? data.emotion.tags : []);
+      setInvestmentEmotionNote(data ? data.emotion.note : "");
+      setInvestmentPrinciple(data ? data.principle : "");
+      resetWorkoutState();
+    } else if (record.category === "운동") {
+      const data = parseWorkoutContent(record.content);
+
+      setContent("");
+      setInvestmentJudgment("");
+      setInvestmentEmotionTags([]);
+      setInvestmentEmotionNote("");
+      setInvestmentPrinciple("");
+
+      if (data) {
+        setWorkoutSets(
+          data.sets.map((s) => ({ ...s, id: crypto.randomUUID() })),
+        );
+        setWorkoutMemo(data.memo);
+        setWorkoutBodyFlags(data.bodyFlags);
+      } else {
+        setWorkoutSets([
+          {
+            id: crypto.randomUUID(),
+            bodyPart: "",
+            exercise: "",
+            weight: "",
+            reps: "",
+            duration: "",
+            intensity: "",
+          },
+        ]);
+        setWorkoutMemo(record.content);
+        setWorkoutBodyFlags([]);
+      }
+    } else {
+      setContent(record.content);
+      setStudyNote("");
+      setInvestmentJudgment("");
+      setInvestmentEmotionTags([]);
+      setInvestmentEmotionNote("");
+      setInvestmentPrinciple("");
+      resetWorkoutState();
+    }
+
     setCopyMessage("수정 모드입니다.");
     setErrorMessage("");
   }
@@ -597,6 +1837,12 @@ export default function Home() {
   function handleCancelEdit() {
     setEditingRecordId(null);
     setContent("");
+    setStudyNote("");
+    setInvestmentJudgment("");
+    setInvestmentEmotionTags([]);
+    setInvestmentEmotionNote("");
+    setInvestmentPrinciple("");
+    resetWorkoutState();
     setCopyMessage("수정을 취소했습니다.");
     setErrorMessage("");
   }
@@ -648,6 +1894,305 @@ export default function Home() {
       setCopyMessage("");
       setErrorMessage("브라우저에서 클립보드 복사를 허용하지 않았습니다.");
     }
+  }
+
+  async function handleSavePrincipleEdit() {
+    if (!editingPrincipleId) return;
+
+    const principle = principles.find((p) => p.id === editingPrincipleId);
+
+    if (!principle || !editingPrincipleText.trim()) return;
+
+    const { error } = await supabase
+      .from("records")
+      .update({
+        content: JSON.stringify({
+          type: "principle",
+          text: editingPrincipleText.trim(),
+          archived: principle.archived,
+          date: principle.date,
+        }),
+      })
+      .eq("id", editingPrincipleId);
+
+    if (!error) {
+      setPrinciples((prev) =>
+        prev.map((p) =>
+          p.id === editingPrincipleId
+            ? { ...p, text: editingPrincipleText.trim() }
+            : p,
+        ),
+      );
+      setEditingPrincipleId(null);
+      setEditingPrincipleText("");
+    }
+  }
+
+  async function handleArchivePrinciple(id: string, archived: boolean) {
+    const principle = principles.find((p) => p.id === id);
+
+    if (!principle) return;
+
+    const { error } = await supabase
+      .from("records")
+      .update({
+        content: JSON.stringify({
+          type: "principle",
+          text: principle.text,
+          archived,
+          date: principle.date,
+        }),
+      })
+      .eq("id", id);
+
+    if (!error) {
+      setPrinciples((prev) =>
+        prev.map((p) => (p.id === id ? { ...p, archived } : p)),
+      );
+    }
+  }
+
+  async function handleDeletePrinciple(id: string) {
+    const { error } = await supabase.from("records").delete().eq("id", id);
+
+    if (!error) {
+      setPrinciples((prev) => prev.filter((p) => p.id !== id));
+    }
+  }
+
+  async function handleCompletePreTradeCheck() {
+    const active = principles.filter((p) => !p.archived);
+    const checkData: InvestmentData = {
+      type: "investment",
+      judgment: `매매 전 원칙 확인 완료 — 활성 원칙 ${active.length}개 모두 확인`,
+      emotion: { tags: ["계획됨"], note: "" },
+      principle: "",
+    };
+
+    await supabase
+      .from("records")
+      .insert({ category: "투자", content: JSON.stringify(checkData) });
+
+    setChecklistOpen(false);
+    setCheckedPrincipleIds(new Set());
+    setCopyMessage("매매 전 원칙 확인이 기록되었습니다.");
+    setErrorMessage("");
+    await fetchRecords();
+  }
+
+  async function handleSaveWeeklyReview() {
+    if (
+      !weeklyReviewQ1.trim() &&
+      !weeklyReviewQ2.trim() &&
+      !weeklyReviewQ3.trim()
+    )
+      return;
+
+    setIsSavingReview(true);
+
+    const data: WeeklyReviewData = {
+      type: "weekly_review",
+      weekId: currentWeekId,
+      weekStart: currentWeekMonday,
+      weekEnd: currentWeekSunday,
+      q1: weeklyReviewQ1.trim(),
+      q2: weeklyReviewQ2.trim(),
+      q3: weeklyReviewQ3.trim(),
+    };
+
+    const existing = weeklyReviews.find((r) => r.weekId === currentWeekId);
+
+    if (existing) {
+      await supabase
+        .from("records")
+        .update({ content: JSON.stringify(data) })
+        .eq("id", existing.id);
+    } else {
+      await supabase
+        .from("records")
+        .insert({ category: "주간회고", content: JSON.stringify(data) });
+    }
+
+    setIsSavingReview(false);
+    setCopyMessage("주간 회고가 저장되었습니다.");
+    setErrorMessage("");
+    await fetchRecords();
+  }
+
+  function handleDownloadWeeklyReviewMd(review: {
+    weekId: string;
+    weekStart: string;
+    weekEnd: string;
+    q1: string;
+    q2: string;
+    q3: string;
+  }) {
+    const summary = computeWeeklySummary(
+      records,
+      principles,
+      review.weekStart,
+      review.weekEnd,
+    );
+    const markdown = formatWeeklyReviewFullMarkdown(
+      review.weekId,
+      review.weekStart,
+      review.weekEnd,
+      summary,
+      review.q1,
+      review.q2,
+      review.q3,
+    );
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = objectUrl;
+    link.download = `${review.weekId} 주간회고.md`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+    setCopyMessage(`${review.weekId} 주간회고.md 다운로드되었습니다.`);
+    setErrorMessage("");
+  }
+
+  async function handleSaveInbody() {
+    if (!inbodyWeight.trim() && !inbodyMuscle.trim() && !inbodyFat.trim()) return;
+
+    setIsSavingInbody(true);
+
+    const content = JSON.stringify({
+      type: "inbody",
+      date: inbodyDate || today,
+      weight: inbodyWeight.trim(),
+      muscleMass: inbodyMuscle.trim(),
+      fatPercentage: inbodyFat.trim(),
+    });
+
+    const { data: newRow } = await supabase
+      .from("records")
+      .insert({ category: "인바디", content })
+      .select("id, category, content, created_at")
+      .single();
+
+    if (newRow) {
+      setInbodyRecords((prev) => [
+        parseInbodyRow(newRow as RecordRow),
+        ...prev,
+      ]);
+    }
+
+    setInbodyWeight("");
+    setInbodyMuscle("");
+    setInbodyFat("");
+    setInbodyDate(getToday());
+    setIsSavingInbody(false);
+    setCopyMessage("인바디 기록이 저장되었습니다.");
+    setErrorMessage("");
+  }
+
+  async function handleDeleteInbody(id: string) {
+    const { error } = await supabase.from("records").delete().eq("id", id);
+
+    if (!error) {
+      setInbodyRecords((prev) => prev.filter((r) => r.id !== id));
+    }
+  }
+
+  async function handleSaveStudyNoteEdit() {
+    if (!editingStudyNoteId) return;
+
+    const note = studyNotes.find((n) => n.id === editingStudyNoteId);
+
+    if (!note || !editingStudyNoteText.trim()) return;
+
+    const { error } = await supabase
+      .from("records")
+      .update({
+        content: JSON.stringify({
+          type: "study_note",
+          text: editingStudyNoteText.trim(),
+          memorized: note.memorized,
+          date: note.date,
+        }),
+      })
+      .eq("id", editingStudyNoteId);
+
+    if (!error) {
+      setStudyNotes((prev) =>
+        prev.map((n) =>
+          n.id === editingStudyNoteId
+            ? { ...n, text: editingStudyNoteText.trim() }
+            : n,
+        ),
+      );
+      setEditingStudyNoteId(null);
+      setEditingStudyNoteText("");
+    }
+  }
+
+  async function handleToggleMemorized(id: string, memorized: boolean) {
+    const note = studyNotes.find((n) => n.id === id);
+
+    if (!note) return;
+
+    const { error } = await supabase
+      .from("records")
+      .update({
+        content: JSON.stringify({
+          type: "study_note",
+          text: note.text,
+          memorized,
+          date: note.date,
+        }),
+      })
+      .eq("id", id);
+
+    if (!error) {
+      setStudyNotes((prev) =>
+        prev.map((n) => (n.id === id ? { ...n, memorized } : n)),
+      );
+    }
+  }
+
+  async function handleDeleteStudyNote(id: string) {
+    const { error } = await supabase.from("records").delete().eq("id", id);
+
+    if (!error) {
+      setStudyNotes((prev) => prev.filter((n) => n.id !== id));
+    }
+  }
+
+  function handleExportStudyNotes() {
+    const markdown = createStudyNotesMarkdown(studyNotes);
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = objectUrl;
+    link.download = "에너지관리기능사 암기 노트.md";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+    setCopyMessage("에너지관리기능사 암기 노트.md 다운로드되었습니다.");
+    setErrorMessage("");
+  }
+
+  function handleExportPrinciples() {
+    const markdown = createPrinciplesMarkdown(principles);
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = objectUrl;
+    link.download = "투자 원칙.md";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+    setCopyMessage("투자 원칙.md 파일이 다운로드되었습니다.");
+    setErrorMessage("");
   }
 
   function handleDownloadMarkdown(markdown: string, date: string) {
@@ -725,11 +2270,97 @@ export default function Home() {
     );
   }
 
+  const activePrinciples = principles.filter((p) => !p.archived);
+  const archivedPrinciples = principles.filter((p) => p.archived);
+
   return (
     <main className="min-h-screen bg-stone-50 px-4 py-6 text-zinc-950 sm:px-6">
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
-        <section className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm sm:p-7">
-          <div className="flex items-start justify-between gap-4">
+        <div className="flex gap-1 rounded-xl bg-zinc-100 p-1">
+          <button
+            type="button"
+            onClick={() => setView("main")}
+            className={`flex-1 rounded-lg px-2 py-2.5 text-xs font-semibold transition ${
+              view === "main"
+                ? "bg-white text-zinc-950 shadow-sm"
+                : "text-zinc-500 hover:text-zinc-700"
+            }`}
+          >
+            기록
+          </button>
+          <button
+            type="button"
+            onClick={() => setView("principles")}
+            className={`flex-1 rounded-lg px-2 py-2.5 text-xs font-semibold transition ${
+              view === "principles"
+                ? "bg-white text-zinc-950 shadow-sm"
+                : "text-zinc-500 hover:text-zinc-700"
+            }`}
+          >
+            투자원칙
+            {activePrinciples.length > 0 && (
+              <span className="ml-1 rounded-full bg-zinc-200 px-1.5 py-0.5 text-xs">
+                {activePrinciples.length}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setView("weekly");
+              if (
+                "Notification" in window &&
+                Notification.permission === "default"
+              ) {
+                void Notification.requestPermission();
+              }
+            }}
+            className={`flex-1 rounded-lg px-2 py-2.5 text-xs font-semibold transition ${
+              view === "weekly"
+                ? "bg-white text-zinc-950 shadow-sm"
+                : "text-zinc-500 hover:text-zinc-700"
+            }`}
+          >
+            주간회고
+            {hasMissingWeeklyReview && (
+              <span className="ml-1 rounded-full bg-amber-400 px-1.5 py-0.5 text-xs text-white">
+                1
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setView("study")}
+            className={`flex-1 rounded-lg px-2 py-2.5 text-xs font-semibold transition ${
+              view === "study"
+                ? "bg-white text-zinc-950 shadow-sm"
+                : "text-zinc-500 hover:text-zinc-700"
+            }`}
+          >
+            공부노트
+            {studyNotes.filter((n) => !n.memorized).length > 0 && (
+              <span className="ml-1 rounded-full bg-zinc-200 px-1.5 py-0.5 text-xs">
+                {studyNotes.filter((n) => !n.memorized).length}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setView("fitness")}
+            className={`flex-1 rounded-lg px-2 py-2.5 text-xs font-semibold transition ${
+              view === "fitness"
+                ? "bg-white text-zinc-950 shadow-sm"
+                : "text-zinc-500 hover:text-zinc-700"
+            }`}
+          >
+            운동현황
+          </button>
+        </div>
+
+        {view === "main" ? (
+          <>
+            <section className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm sm:p-7">
+              <div className="flex items-start justify-between gap-4">
             <div className="space-y-2">
               <h1 className="text-3xl font-bold tracking-normal text-zinc-950 sm:text-4xl">
                 Life Ledger
@@ -750,7 +2381,7 @@ export default function Home() {
           <div className="mt-6 space-y-3">
             <p className="text-sm font-semibold text-zinc-800">카테고리</p>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-              {categories.map((category) => {
+              {inputCategories.map((category) => {
                 const isSelected = selectedCategory === category;
 
                 return (
@@ -778,27 +2409,343 @@ export default function Home() {
             </p>
           </div>
 
-          <label className="mt-5 block">
-            <span className="flex items-center justify-between gap-2 text-sm font-semibold text-zinc-800">
-              기록 내용
+          {selectedCategory === "투자" ? (
+            <div className="mt-5 space-y-4">
               {isEditing ? (
-                <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
+                <span className="inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
                   수정 모드
                 </span>
               ) : null}
-            </span>
-            <p className="mt-2 rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm leading-6 text-zinc-600">
-              형식은 자유롭게 적어도 됩니다. 나중에 검색과 태그로 정리할 수 있어요.
-              <br />
-              {categoryHints[selectedCategory]}
-            </p>
-            <textarea
-              value={content}
-              onChange={(event) => setContent(event.target.value)}
-              placeholder="오늘 남기고 싶은 기록을 입력하세요."
-              className="mt-2 min-h-40 w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
-            />
-          </label>
+
+              <label className="block">
+                <span className="text-sm font-semibold text-zinc-800">판단</span>
+                <p className="mt-1 text-xs text-zinc-500">
+                  오늘 시장/종목에 대해 어떻게 봤는가
+                </p>
+                <textarea
+                  value={investmentJudgment}
+                  onChange={(event) =>
+                    setInvestmentJudgment(event.target.value)
+                  }
+                  placeholder="오늘의 시장 판단을 자유롭게 적어보세요."
+                  className="mt-2 min-h-24 w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                />
+              </label>
+
+              <div>
+                <p className="text-sm font-semibold text-zinc-800">감정</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {INVESTMENT_EMOTION_CHIPS.map((chip) => {
+                    const isChipSelected = investmentEmotionTags.includes(chip);
+
+                    return (
+                      <button
+                        key={chip}
+                        type="button"
+                        onClick={() =>
+                          setInvestmentEmotionTags((prev) =>
+                            isChipSelected
+                              ? prev.filter((t) => t !== chip)
+                              : [...prev, chip],
+                          )
+                        }
+                        className={`touch-manipulation rounded-full border px-3 py-1.5 text-sm font-medium transition ${
+                          isChipSelected
+                            ? "border-zinc-950 bg-zinc-950 text-white"
+                            : "border-zinc-200 bg-zinc-50 text-zinc-700 hover:border-zinc-300 hover:bg-white"
+                        }`}
+                      >
+                        {chip}
+                      </button>
+                    );
+                  })}
+                </div>
+                <input
+                  type="text"
+                  value={investmentEmotionNote}
+                  onChange={(event) =>
+                    setInvestmentEmotionNote(event.target.value)
+                  }
+                  placeholder="추가 감정 메모 (선택)"
+                  className="mt-2 w-full rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                />
+              </div>
+
+              <label className="block">
+                <span className="text-sm font-semibold text-zinc-800">
+                  다음 원칙
+                </span>
+                <p className="mt-1 text-xs text-zinc-500">
+                  오늘 경험에서 뽑은 매매 원칙 — 없으면 비워두세요
+                </p>
+                <textarea
+                  value={investmentPrinciple}
+                  onChange={(event) =>
+                    setInvestmentPrinciple(event.target.value)
+                  }
+                  placeholder="오늘 배운 원칙이 있다면 적어보세요."
+                  className="mt-2 min-h-24 w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                />
+              </label>
+            </div>
+          ) : selectedCategory === "운동" ? (
+            <div className="mt-5 space-y-4">
+              {isEditing ? (
+                <span className="inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
+                  수정 모드
+                </span>
+              ) : null}
+
+              <div>
+                <p className="text-sm font-semibold text-zinc-800">세트</p>
+                <div className="mt-2 space-y-3">
+                  {workoutSets.map((set, index) => {
+                    const isCardio = set.bodyPart === "유산소";
+                    const suggestions = (
+                      recentExercisesByBodyPart.get(set.bodyPart) ?? []
+                    )
+                      .filter(
+                        (e) =>
+                          set.exercise &&
+                          e
+                            .toLowerCase()
+                            .includes(set.exercise.toLowerCase()),
+                      )
+                      .slice(0, 5);
+
+                    return (
+                      <div
+                        key={set.id}
+                        className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 space-y-2"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-semibold text-zinc-500">
+                            세트 {index + 1}
+                          </span>
+                          {workoutSets.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => removeWorkoutSet(set.id)}
+                              className="text-xs text-zinc-400 hover:text-red-600"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap gap-1">
+                          {WORKOUT_BODY_PARTS.map((part) => (
+                            <button
+                              key={part}
+                              type="button"
+                              onClick={() =>
+                                updateWorkoutSet(set.id, "bodyPart", part)
+                              }
+                              className={`touch-manipulation rounded-full border px-2.5 py-1 text-xs font-medium transition ${
+                                set.bodyPart === part
+                                  ? "border-zinc-950 bg-zinc-950 text-white"
+                                  : "border-zinc-200 bg-white text-zinc-600 hover:border-zinc-400"
+                              }`}
+                            >
+                              {part}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="relative">
+                          <input
+                            type="text"
+                            value={set.exercise}
+                            onChange={(e) =>
+                              updateWorkoutSet(set.id, "exercise", e.target.value)
+                            }
+                            onFocus={() => setWorkoutExerciseFocus(set.id)}
+                            onBlur={() =>
+                              setTimeout(
+                                () => setWorkoutExerciseFocus(null),
+                                150,
+                              )
+                            }
+                            placeholder="운동명"
+                            className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                          />
+                          {workoutExerciseFocus === set.id &&
+                            suggestions.length > 0 && (
+                              <div className="absolute top-full z-10 mt-1 w-full rounded-lg border border-zinc-200 bg-white shadow-lg">
+                                {suggestions.map((s) => (
+                                  <button
+                                    key={s}
+                                    type="button"
+                                    onMouseDown={() =>
+                                      updateWorkoutSet(set.id, "exercise", s)
+                                    }
+                                    className="w-full px-3 py-2 text-left text-sm text-zinc-700 hover:bg-zinc-50"
+                                  >
+                                    {s}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          {isCardio ? (
+                            <>
+                              <input
+                                type="text"
+                                value={set.duration}
+                                onChange={(e) =>
+                                  updateWorkoutSet(
+                                    set.id,
+                                    "duration",
+                                    e.target.value,
+                                  )
+                                }
+                                placeholder="시간(분)"
+                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                              />
+                              <input
+                                type="text"
+                                value={set.intensity}
+                                onChange={(e) =>
+                                  updateWorkoutSet(
+                                    set.id,
+                                    "intensity",
+                                    e.target.value,
+                                  )
+                                }
+                                placeholder="강도"
+                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                              />
+                            </>
+                          ) : (
+                            <>
+                              <input
+                                type="text"
+                                value={set.weight}
+                                onChange={(e) =>
+                                  updateWorkoutSet(
+                                    set.id,
+                                    "weight",
+                                    e.target.value,
+                                  )
+                                }
+                                placeholder="중량(kg)"
+                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                              />
+                              <input
+                                type="text"
+                                value={set.reps}
+                                onChange={(e) =>
+                                  updateWorkoutSet(
+                                    set.id,
+                                    "reps",
+                                    e.target.value,
+                                  )
+                                }
+                                placeholder="횟수"
+                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                              />
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={addWorkoutSet}
+                  className="mt-2 w-full touch-manipulation rounded-lg border border-dashed border-zinc-300 py-2.5 text-sm font-semibold text-zinc-500 transition hover:border-zinc-950 hover:text-zinc-950"
+                >
+                  + 세트 추가
+                </button>
+              </div>
+
+              <div>
+                <p className="text-sm font-semibold text-zinc-800">몸 상태</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {WORKOUT_BODY_FLAGS.map((flag) => {
+                    const isFlagSelected = workoutBodyFlags.includes(flag);
+
+                    return (
+                      <button
+                        key={flag}
+                        type="button"
+                        onClick={() =>
+                          setWorkoutBodyFlags((prev) =>
+                            isFlagSelected
+                              ? prev.filter((f) => f !== flag)
+                              : [...prev, flag],
+                          )
+                        }
+                        className={`touch-manipulation rounded-full border px-3 py-1.5 text-sm font-medium transition ${
+                          isFlagSelected
+                            ? "border-zinc-950 bg-zinc-950 text-white"
+                            : "border-zinc-200 bg-zinc-50 text-zinc-700 hover:border-zinc-300 hover:bg-white"
+                        }`}
+                      >
+                        {flag}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <label className="block">
+                <span className="text-sm font-semibold text-zinc-800">
+                  운동 메모
+                </span>
+                <textarea
+                  value={workoutMemo}
+                  onChange={(e) => setWorkoutMemo(e.target.value)}
+                  placeholder="기타 메모 (선택)"
+                  className="mt-2 min-h-20 w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                />
+              </label>
+            </div>
+          ) : (
+            <div className="mt-5 space-y-4">
+              <label className="block">
+                <span className="flex items-center justify-between gap-2 text-sm font-semibold text-zinc-800">
+                  기록 내용
+                  {isEditing ? (
+                    <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
+                      수정 모드
+                    </span>
+                  ) : null}
+                </span>
+                <p className="mt-2 rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm leading-6 text-zinc-600">
+                  형식은 자유롭게 적어도 됩니다. 나중에 검색과 태그로 정리할 수 있어요.
+                  <br />
+                  {categoryHints[selectedCategory]}
+                </p>
+                <textarea
+                  value={content}
+                  onChange={(event) => setContent(event.target.value)}
+                  placeholder="오늘 남기고 싶은 기록을 입력하세요."
+                  className="mt-2 min-h-40 w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                />
+              </label>
+              {selectedCategory === "공부/콘텐츠" && !isEditing && (
+                <label className="block">
+                  <span className="text-sm font-semibold text-zinc-800">
+                    핵심 암기
+                  </span>
+                  <p className="mt-1 text-xs text-zinc-500">
+                    공부 노트에 쌓을 암기 항목 — 없으면 비워두세요
+                  </p>
+                  <textarea
+                    value={studyNote}
+                    onChange={(e) => setStudyNote(e.target.value)}
+                    placeholder="예: y = Kp × e (비례동작)"
+                    className="mt-2 min-h-20 w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                  />
+                </label>
+              )}
+            </div>
+          )}
 
           <div className="mt-4 grid gap-2 sm:grid-cols-2">
             <button
@@ -818,7 +2765,13 @@ export default function Home() {
             <button
               type="button"
               onClick={() => handleCopy(draftMarkdown)}
-              disabled={!content.trim()}
+              disabled={
+                selectedCategory === "투자"
+                  ? !investmentHasContent
+                  : selectedCategory === "운동"
+                    ? !workoutHasContent
+                    : !content.trim()
+              }
               className="touch-manipulation rounded-lg border border-zinc-300 bg-white px-5 py-3 text-sm font-semibold text-zinc-800 transition hover:border-zinc-950 disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-300"
             >
               Markdown 복사
@@ -1049,9 +3002,161 @@ export default function Home() {
                             </div>
                           ) : null}
 
-                          <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-zinc-700">
-                            {record.content}
-                          </p>
+                          {record.category === "운동" ? (
+                            (() => {
+                              const data = parseWorkoutContent(record.content);
+
+                              if (!data) {
+                                return (
+                                  <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-zinc-700">
+                                    {record.content}
+                                  </p>
+                                );
+                              }
+
+                              return (
+                                <div className="mt-3 space-y-2 text-sm text-zinc-700">
+                                  {data.sets.filter((s) => s.exercise).length >
+                                    0 && (
+                                    <div className="overflow-x-auto">
+                                      <table className="w-full text-left text-xs">
+                                        <thead>
+                                          <tr className="text-zinc-400">
+                                            <th className="pr-3 pb-1 font-semibold">
+                                              부위
+                                            </th>
+                                            <th className="pr-3 pb-1 font-semibold">
+                                              운동
+                                            </th>
+                                            <th className="pb-1 font-semibold">
+                                              중량/횟수
+                                            </th>
+                                          </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-zinc-100">
+                                          {data.sets
+                                            .filter((s) => s.exercise)
+                                            .map((s, i) => (
+                                              <tr key={i}>
+                                                <td className="py-1 pr-3 text-zinc-500">
+                                                  {s.bodyPart}
+                                                </td>
+                                                <td className="py-1 pr-3">
+                                                  {s.exercise}
+                                                </td>
+                                                <td className="py-1 text-zinc-600">
+                                                  {s.bodyPart === "유산소"
+                                                    ? [
+                                                        s.duration &&
+                                                          `${s.duration}분`,
+                                                        s.intensity &&
+                                                          `강도 ${s.intensity}`,
+                                                      ]
+                                                        .filter(Boolean)
+                                                        .join(" ")
+                                                    : [
+                                                        s.weight &&
+                                                          `${s.weight}kg`,
+                                                        s.reps && `${s.reps}회`,
+                                                      ]
+                                                        .filter(Boolean)
+                                                        .join(" ")}
+                                                </td>
+                                              </tr>
+                                            ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  )}
+                                  {data.bodyFlags.length > 0 && (
+                                    <div className="flex flex-wrap gap-1">
+                                      {data.bodyFlags.map((f) => (
+                                        <span
+                                          key={f}
+                                          className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-600"
+                                        >
+                                          #{f.replace(/[\s/]+/g, "")}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {data.memo && (
+                                    <p className="whitespace-pre-wrap text-zinc-600">
+                                      {data.memo}
+                                    </p>
+                                  )}
+                                </div>
+                              );
+                            })()
+                          ) : record.category === "투자" ? (
+                            (() => {
+                              const data = parseInvestmentContent(
+                                record.content,
+                              );
+
+                              if (!data) {
+                                return (
+                                  <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-zinc-700">
+                                    {record.content}
+                                  </p>
+                                );
+                              }
+
+                              return (
+                                <div className="mt-3 space-y-2 text-sm leading-6 text-zinc-700">
+                                  {data.judgment && (
+                                    <div>
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                                        판단
+                                      </p>
+                                      <p className="whitespace-pre-wrap">
+                                        {data.judgment}
+                                      </p>
+                                    </div>
+                                  )}
+                                  {(data.emotion.tags.length > 0 ||
+                                    data.emotion.note) && (
+                                    <div>
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                                        감정
+                                      </p>
+                                      {data.emotion.tags.length > 0 && (
+                                        <div className="flex flex-wrap gap-1.5">
+                                          {data.emotion.tags.map((tag) => (
+                                            <span
+                                              key={tag}
+                                              className="rounded-full bg-zinc-100 px-2.5 py-0.5 text-xs font-medium text-zinc-700"
+                                            >
+                                              #{tag}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      )}
+                                      {data.emotion.note && (
+                                        <p className="whitespace-pre-wrap">
+                                          {data.emotion.note}
+                                        </p>
+                                      )}
+                                    </div>
+                                  )}
+                                  {data.principle && (
+                                    <div>
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                                        다음 원칙
+                                      </p>
+                                      <p className="whitespace-pre-wrap">
+                                        {data.principle}
+                                      </p>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()
+                          ) : (
+                            <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-zinc-700">
+                              {record.content}
+                            </p>
+                          )}
                         </article>
                       );
                     })}
@@ -1061,7 +3166,1054 @@ export default function Home() {
             </div>
           )}
         </section>
+          </>
+        ) : view === "principles" ? (
+          <section className="space-y-4">
+            <div className="flex items-end justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-bold text-zinc-950">투자 원칙</h2>
+                <p className="mt-1 text-sm text-zinc-500">
+                  활성 {activePrinciples.length}개
+                  {archivedPrinciples.length > 0 &&
+                    ` · 보관 ${archivedPrinciples.length}개`}
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setCheckedPrincipleIds(new Set());
+                  setChecklistOpen(true);
+                }}
+                disabled={activePrinciples.length === 0}
+                className="touch-manipulation rounded-lg bg-zinc-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
+              >
+                매매 전 체크
+              </button>
+              <button
+                type="button"
+                onClick={handleExportPrinciples}
+                disabled={principles.length === 0}
+                className="touch-manipulation rounded-lg border border-zinc-300 bg-white px-4 py-3 text-sm font-semibold text-zinc-800 transition hover:border-zinc-950 disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-300"
+              >
+                내보내기 .md
+              </button>
+            </div>
+
+            {copyMessage ? (
+              <p className="text-sm font-medium text-emerald-700">
+                {copyMessage}
+              </p>
+            ) : null}
+
+            <div className="space-y-2">
+              {activePrinciples.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-zinc-300 bg-white p-6 text-center text-sm text-zinc-500">
+                  아직 원칙이 없습니다. 투자 기록의 &quot;다음 원칙&quot; 필드를 채워보세요.
+                </div>
+              ) : (
+                activePrinciples.map((principle) => (
+                  <div
+                    key={principle.id}
+                    className="rounded-lg border border-zinc-200 bg-white p-4"
+                  >
+                    {editingPrincipleId === principle.id ? (
+                      <div className="space-y-2">
+                        <textarea
+                          value={editingPrincipleText}
+                          onChange={(e) =>
+                            setEditingPrincipleText(e.target.value)
+                          }
+                          className="w-full resize-none rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm leading-6 text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                          rows={3}
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={handleSavePrincipleEdit}
+                            disabled={!editingPrincipleText.trim()}
+                            className="touch-manipulation rounded-lg bg-zinc-950 px-3 py-2 text-xs font-semibold text-white transition hover:bg-zinc-800 disabled:bg-zinc-300"
+                          >
+                            저장
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingPrincipleId(null);
+                              setEditingPrincipleText("");
+                            }}
+                            className="touch-manipulation rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950"
+                          >
+                            취소
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="text-sm leading-6 text-zinc-800">
+                          {principle.text}
+                        </p>
+                        <div className="mt-2 flex items-center justify-between gap-2">
+                          <time className="text-xs text-zinc-400">
+                            {principle.date}
+                          </time>
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingPrincipleId(principle.id);
+                                setEditingPrincipleText(principle.text);
+                              }}
+                              className="touch-manipulation rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-semibold text-zinc-600 transition hover:border-zinc-950 hover:text-zinc-950"
+                            >
+                              수정
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleArchivePrinciple(principle.id, true)
+                              }
+                              className="touch-manipulation rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-semibold text-zinc-600 transition hover:border-zinc-950 hover:text-zinc-950"
+                            >
+                              보관
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleDeletePrinciple(principle.id)
+                              }
+                              className="touch-manipulation rounded-lg border border-red-200 px-2.5 py-1.5 text-xs font-semibold text-red-600 transition hover:border-red-700"
+                            >
+                              삭제
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+
+            {archivedPrinciples.length > 0 && (
+              <details className="rounded-lg border border-zinc-200 bg-white">
+                <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-zinc-600 hover:text-zinc-950">
+                  보관된 원칙 ({archivedPrinciples.length})
+                </summary>
+                <div className="space-y-2 border-t border-zinc-100 p-4">
+                  {archivedPrinciples.map((principle) => (
+                    <div
+                      key={principle.id}
+                      className="rounded-lg border border-zinc-100 bg-zinc-50 p-3"
+                    >
+                      <p className="text-sm leading-6 text-zinc-500">
+                        {principle.text}
+                      </p>
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        <time className="text-xs text-zinc-400">
+                          {principle.date}
+                        </time>
+                        <div className="flex gap-1">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleArchivePrinciple(principle.id, false)
+                            }
+                            className="touch-manipulation rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-semibold text-zinc-600 transition hover:border-zinc-950"
+                          >
+                            복원
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeletePrinciple(principle.id)}
+                            className="touch-manipulation rounded-lg border border-red-200 px-2.5 py-1.5 text-xs font-semibold text-red-600 transition hover:border-red-700"
+                          >
+                            삭제
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+          </section>
+        ) : view === "weekly" ? (
+          <section className="space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-bold text-zinc-950">주간 회고</h2>
+                <p className="mt-1 text-sm text-zinc-500">
+                  {currentWeekId} · {currentWeekMonday} ~ {currentWeekSunday}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setWeeklyReviewListMode((prev) => !prev);
+                  setSelectedWeeklyReview(null);
+                }}
+                className="shrink-0 touch-manipulation rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950 hover:text-zinc-950"
+              >
+                {weeklyReviewListMode ? "이번 주 작성" : "지난 회고"}
+              </button>
+            </div>
+
+            {!weeklyReviewListMode ? (
+              <div className="space-y-4">
+                <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 space-y-4">
+                  <p className="text-sm font-bold text-zinc-800">이번 주 자동 요약</p>
+
+                  <div>
+                    <p className="text-xs text-zinc-500 mb-2">
+                      기록한 날: {weeklySummary.daysRecorded}/7일
+                    </p>
+                    <div className="flex gap-2">
+                      {weeklySummary.dayDots.map(({ date, categories }, i) => {
+                        const dayLabels = ["월", "화", "수", "목", "금", "토", "일"];
+                        const hasRecord = categories.length > 0;
+
+                        return (
+                          <div key={date} className="flex flex-col items-center gap-1">
+                            <span className="text-xs text-zinc-400">{dayLabels[i]}</span>
+                            <div
+                              className={`h-3 w-3 rounded-full ${hasRecord ? "bg-zinc-950" : "bg-zinc-200"}`}
+                            />
+                            <div className="flex flex-col gap-0.5">
+                              {inputCategories.map((cat) => (
+                                <div
+                                  key={cat}
+                                  title={cat}
+                                  className={`h-1.5 w-1.5 rounded-full ${
+                                    categories.includes(cat)
+                                      ? "bg-zinc-500"
+                                      : "bg-transparent"
+                                  }`}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {weeklySummary.workoutCount > 0 && (
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-semibold text-zinc-600">
+                        운동 {weeklySummary.workoutCount}회
+                      </p>
+                      {Object.keys(weeklySummary.bodyPartSets).length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {Object.entries(weeklySummary.bodyPartSets).map(
+                            ([part, count]) => (
+                              <span
+                                key={part}
+                                className="rounded-full border border-zinc-200 bg-white px-2 py-0.5 text-xs text-zinc-600"
+                              >
+                                {part} {count}세트
+                              </span>
+                            ),
+                          )}
+                        </div>
+                      )}
+                      {Object.keys(weeklySummary.bodyFlagFreq).length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {Object.entries(weeklySummary.bodyFlagFreq).map(
+                            ([flag, count]) => (
+                              <span
+                                key={flag}
+                                className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs text-amber-700"
+                              >
+                                {flag} {count}회
+                              </span>
+                            ),
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {weeklySummary.investmentCount > 0 && (
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-semibold text-zinc-600">
+                        투자 {weeklySummary.investmentCount}회
+                      </p>
+                      {Object.keys(weeklySummary.emotionTagDist).length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {Object.entries(weeklySummary.emotionTagDist)
+                            .sort((a, b) => b[1] - a[1])
+                            .map(([tag, count]) => (
+                              <span
+                                key={tag}
+                                className="rounded-full border border-zinc-200 bg-white px-2 py-0.5 text-xs text-zinc-600"
+                              >
+                                #{tag} {count}
+                              </span>
+                            ))}
+                        </div>
+                      )}
+                      {weeklySummary.newPrinciples.length > 0 && (
+                        <div>
+                          <p className="text-xs text-zinc-400 mb-0.5">
+                            이번 주 추가된 원칙
+                          </p>
+                          {weeklySummary.newPrinciples.map((p, i) => (
+                            <p key={i} className="text-xs leading-5 text-zinc-600">
+                              · {p}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {weeklySummary.topKeywords.length > 0 && (
+                    <div>
+                      <p className="text-xs text-zinc-400 mb-1">
+                        이번 주 감정 키워드
+                      </p>
+                      <div className="flex flex-wrap gap-1">
+                        {weeklySummary.topKeywords.map((kw) => (
+                          <span
+                            key={kw}
+                            className="rounded-full bg-zinc-100 px-2.5 py-0.5 text-xs text-zinc-700"
+                          >
+                            #{kw}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-3">
+                  <label className="block">
+                    <span className="text-sm font-semibold text-zinc-800">
+                      1. 이번 주 가장 잘한 결정은?
+                    </span>
+                    <textarea
+                      value={weeklyReviewQ1}
+                      onChange={(e) => setWeeklyReviewQ1(e.target.value)}
+                      placeholder="자유롭게 적어보세요."
+                      className="mt-2 min-h-20 w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-sm font-semibold text-zinc-800">
+                      2. 반복하고 싶지 않은 것은?
+                    </span>
+                    <textarea
+                      value={weeklyReviewQ2}
+                      onChange={(e) => setWeeklyReviewQ2(e.target.value)}
+                      placeholder="자유롭게 적어보세요."
+                      className="mt-2 min-h-20 w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-sm font-semibold text-zinc-800">
+                      3. 다음 주에 딱 하나만 바꾼다면?
+                    </span>
+                    <textarea
+                      value={weeklyReviewQ3}
+                      onChange={(e) => setWeeklyReviewQ3(e.target.value)}
+                      placeholder="자유롭게 적어보세요."
+                      className="mt-2 min-h-20 w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                    />
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSaveWeeklyReview}
+                    disabled={
+                      isSavingReview ||
+                      (!weeklyReviewQ1.trim() &&
+                        !weeklyReviewQ2.trim() &&
+                        !weeklyReviewQ3.trim())
+                    }
+                    className="touch-manipulation rounded-lg bg-zinc-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
+                  >
+                    {isSavingReview
+                      ? "저장 중..."
+                      : weeklyReviewExists
+                        ? "회고 수정"
+                        : "회고 저장"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleDownloadWeeklyReviewMd({
+                        weekId: currentWeekId,
+                        weekStart: currentWeekMonday,
+                        weekEnd: currentWeekSunday,
+                        q1: weeklyReviewQ1,
+                        q2: weeklyReviewQ2,
+                        q3: weeklyReviewQ3,
+                      })
+                    }
+                    className="touch-manipulation rounded-lg border border-zinc-300 bg-white px-5 py-3 text-sm font-semibold text-zinc-800 transition hover:border-zinc-950"
+                  >
+                    .md 다운로드
+                  </button>
+                </div>
+
+                {copyMessage ? (
+                  <p className="text-sm font-medium text-emerald-700">
+                    {copyMessage}
+                  </p>
+                ) : null}
+                {errorMessage ? (
+                  <p className="text-sm font-medium text-red-700">
+                    {errorMessage}
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {weeklyReviews.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-zinc-300 bg-white p-6 text-center text-sm text-zinc-500">
+                    아직 저장된 회고가 없습니다.
+                  </div>
+                ) : (
+                  [...weeklyReviews]
+                    .sort((a, b) => b.weekId.localeCompare(a.weekId))
+                    .map((review) =>
+                      selectedWeeklyReview?.id === review.id ? (
+                        <div
+                          key={review.id}
+                          className="rounded-lg border border-zinc-200 bg-white p-4 space-y-3"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <p className="text-sm font-bold text-zinc-950">
+                                {review.weekId}
+                              </p>
+                              <p className="text-xs text-zinc-400">
+                                {review.weekStart} ~ {review.weekEnd}
+                              </p>
+                            </div>
+                            <div className="flex gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleDownloadWeeklyReviewMd(review)
+                                }
+                                className="touch-manipulation rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-semibold text-zinc-600 transition hover:border-zinc-950"
+                              >
+                                .md
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setSelectedWeeklyReview(null)}
+                                className="touch-manipulation rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-semibold text-zinc-600 transition hover:border-zinc-950"
+                              >
+                                닫기
+                              </button>
+                            </div>
+                          </div>
+                          {review.q1 && (
+                            <div>
+                              <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                                가장 잘한 결정
+                              </p>
+                              <p className="mt-0.5 whitespace-pre-wrap text-sm leading-6 text-zinc-800">
+                                {review.q1}
+                              </p>
+                            </div>
+                          )}
+                          {review.q2 && (
+                            <div>
+                              <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                                반복하고 싶지 않은 것
+                              </p>
+                              <p className="mt-0.5 whitespace-pre-wrap text-sm leading-6 text-zinc-800">
+                                {review.q2}
+                              </p>
+                            </div>
+                          )}
+                          {review.q3 && (
+                            <div>
+                              <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                                다음 주 변화
+                              </p>
+                              <p className="mt-0.5 whitespace-pre-wrap text-sm leading-6 text-zinc-800">
+                                {review.q3}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <button
+                          key={review.id}
+                          type="button"
+                          onClick={() => setSelectedWeeklyReview(review)}
+                          className="w-full rounded-lg border border-zinc-200 bg-white p-4 text-left transition hover:border-zinc-400"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-sm font-semibold text-zinc-950">
+                                {review.weekId}
+                              </p>
+                              <p className="text-xs text-zinc-400">
+                                {review.weekStart} ~ {review.weekEnd}
+                              </p>
+                            </div>
+                            <span className="text-xs text-zinc-400">→</span>
+                          </div>
+                          {review.q1 && (
+                            <p className="mt-1.5 truncate text-xs text-zinc-500">
+                              잘한 결정:{" "}
+                              {review.q1.length > 50
+                                ? review.q1.slice(0, 50) + "..."
+                                : review.q1}
+                            </p>
+                          )}
+                        </button>
+                      ),
+                    )
+                )}
+
+                {copyMessage ? (
+                  <p className="text-sm font-medium text-emerald-700">
+                    {copyMessage}
+                  </p>
+                ) : null}
+              </div>
+            )}
+          </section>
+        ) : view === "study" ? (
+          <section className="space-y-4">
+            <div className="flex items-end justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-bold text-zinc-950">공부 노트</h2>
+                <p className="mt-1 text-sm text-zinc-500">
+                  미암기 {studyNotes.filter((n) => !n.memorized).length}개
+                  {studyNotes.filter((n) => n.memorized).length > 0 &&
+                    ` · 암기 완료 ${studyNotes.filter((n) => n.memorized).length}개`}
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleExportStudyNotes}
+              disabled={studyNotes.length === 0}
+              className="w-full touch-manipulation rounded-lg border border-zinc-300 bg-white px-4 py-3 text-sm font-semibold text-zinc-800 transition hover:border-zinc-950 disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-300"
+            >
+              내보내기 .md
+            </button>
+
+            {copyMessage ? (
+              <p className="text-sm font-medium text-emerald-700">
+                {copyMessage}
+              </p>
+            ) : null}
+
+            <div className="space-y-2">
+              {studyNotes.filter((n) => !n.memorized).length === 0 ? (
+                <div className="rounded-lg border border-dashed border-zinc-300 bg-white p-6 text-center text-sm text-zinc-500">
+                  공부/콘텐츠 기록의 &quot;핵심 암기&quot; 필드를 채워보세요.
+                </div>
+              ) : (
+                studyNotes
+                  .filter((n) => !n.memorized)
+                  .map((note) => (
+                    <div
+                      key={note.id}
+                      className="rounded-lg border border-zinc-200 bg-white p-4"
+                    >
+                      {editingStudyNoteId === note.id ? (
+                        <div className="space-y-2">
+                          <textarea
+                            value={editingStudyNoteText}
+                            onChange={(e) =>
+                              setEditingStudyNoteText(e.target.value)
+                            }
+                            className="w-full resize-none rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm leading-6 text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                            rows={2}
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={handleSaveStudyNoteEdit}
+                              disabled={!editingStudyNoteText.trim()}
+                              className="touch-manipulation rounded-lg bg-zinc-950 px-3 py-2 text-xs font-semibold text-white transition hover:bg-zinc-800 disabled:bg-zinc-300"
+                            >
+                              저장
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingStudyNoteId(null);
+                                setEditingStudyNoteText("");
+                              }}
+                              className="touch-manipulation rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950"
+                            >
+                              취소
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <p className="text-sm leading-6 text-zinc-800">
+                            {note.text}
+                          </p>
+                          <div className="mt-2 flex items-center justify-between gap-2">
+                            <time className="text-xs text-zinc-400">
+                              {note.date}
+                            </time>
+                            <div className="flex gap-1">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleToggleMemorized(note.id, true)
+                                }
+                                className="touch-manipulation rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-semibold text-zinc-600 transition hover:border-zinc-950 hover:text-zinc-950"
+                              >
+                                암기 완료
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingStudyNoteId(note.id);
+                                  setEditingStudyNoteText(note.text);
+                                }}
+                                className="touch-manipulation rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-semibold text-zinc-600 transition hover:border-zinc-950 hover:text-zinc-950"
+                              >
+                                수정
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteStudyNote(note.id)}
+                                className="touch-manipulation rounded-lg border border-red-200 px-2.5 py-1.5 text-xs font-semibold text-red-600 transition hover:border-red-700"
+                              >
+                                삭제
+                              </button>
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))
+              )}
+            </div>
+
+            {studyNotes.filter((n) => n.memorized).length > 0 && (
+              <details className="rounded-lg border border-zinc-200 bg-white">
+                <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-zinc-600 hover:text-zinc-950">
+                  암기 완료 ({studyNotes.filter((n) => n.memorized).length})
+                </summary>
+                <div className="space-y-2 border-t border-zinc-100 p-4">
+                  {studyNotes
+                    .filter((n) => n.memorized)
+                    .map((note) => (
+                      <div
+                        key={note.id}
+                        className="rounded-lg border border-zinc-100 bg-zinc-50 p-3"
+                      >
+                        <p className="text-sm leading-6 text-zinc-500">
+                          {note.text}
+                        </p>
+                        <div className="mt-2 flex items-center justify-between gap-2">
+                          <time className="text-xs text-zinc-400">
+                            {note.date}
+                          </time>
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleToggleMemorized(note.id, false)
+                              }
+                              className="touch-manipulation rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-semibold text-zinc-600 transition hover:border-zinc-950"
+                            >
+                              미암기로
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteStudyNote(note.id)}
+                              className="touch-manipulation rounded-lg border border-red-200 px-2.5 py-1.5 text-xs font-semibold text-red-600 transition hover:border-red-700"
+                            >
+                              삭제
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </details>
+            )}
+          </section>
+        ) : (
+          <section className="space-y-5">
+            <h2 className="text-lg font-bold text-zinc-950">운동 현황</h2>
+
+            {/* 1. 주간 부위별 세트 수 */}
+            <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+              <p className="text-sm font-semibold text-zinc-800">
+                주간 부위별 세트 수 (최근 4주)
+              </p>
+              {weeklyBodyPartData.every(
+                (d) => Object.keys(d).length === 1,
+              ) ? (
+                <p className="mt-4 text-center text-xs text-zinc-400">
+                  운동 기록이 없습니다
+                </p>
+              ) : (
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart
+                    data={weeklyBodyPartData}
+                    margin={{ top: 8, right: 4, left: -20, bottom: 0 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
+                    <XAxis dataKey="week" tick={{ fontSize: 11 }} />
+                    <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                    <Tooltip />
+                    <Legend
+                      iconSize={10}
+                      wrapperStyle={{ fontSize: 11 }}
+                    />
+                    {(
+                      Object.keys(WORKOUT_BODY_PARTS) as unknown as typeof WORKOUT_BODY_PARTS
+                    ) &&
+                      [...WORKOUT_BODY_PARTS].map((part) => (
+                        <Bar
+                          key={part}
+                          dataKey={part}
+                          stackId="a"
+                          fill={BODY_PART_COLORS[part] ?? "#a1a1aa"}
+                        />
+                      ))}
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+
+            {/* 2. 운동별 최고 중량 추이 */}
+            <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+              <p className="text-sm font-semibold text-zinc-800">
+                운동별 최고 중량 추이
+              </p>
+              {fitnessExerciseNames.length === 0 ? (
+                <p className="mt-4 text-center text-xs text-zinc-400">
+                  중량 기록이 없습니다
+                </p>
+              ) : (
+                <>
+                  <select
+                    value={selectedFitnessExercise}
+                    onChange={(e) =>
+                      setSelectedFitnessExercise(e.target.value)
+                    }
+                    className="mt-3 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                  >
+                    <option value="">운동 선택</option>
+                    {fitnessExerciseNames.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedFitnessExercise && (
+                    <ResponsiveContainer width="100%" height={200}>
+                      <LineChart
+                        data={exerciseWeightData}
+                        margin={{ top: 12, right: 4, left: -20, bottom: 0 }}
+                      >
+                        <CartesianGrid
+                          strokeDasharray="3 3"
+                          stroke="#f4f4f5"
+                        />
+                        <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                        <YAxis
+                          tick={{ fontSize: 11 }}
+                          unit="kg"
+                          domain={["auto", "auto"]}
+                        />
+                        <Tooltip
+                          formatter={(v) => [`${v}kg`, "최고 중량"]}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="중량"
+                          stroke="#18181b"
+                          strokeWidth={2}
+                          dot={{ r: 3 }}
+                          activeDot={{ r: 5 }}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* 3. 몸 상태 플래그 추이 */}
+            <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+              <p className="text-sm font-semibold text-zinc-800">
+                몸 상태 플래그 추이 (최근 8주)
+              </p>
+              <ResponsiveContainer width="100%" height={180}>
+                <LineChart
+                  data={weeklyFlagData}
+                  margin={{ top: 8, right: 4, left: -20, bottom: 0 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
+                  <XAxis dataKey="week" tick={{ fontSize: 11 }} />
+                  <YAxis
+                    tick={{ fontSize: 11 }}
+                    allowDecimals={false}
+                    domain={[0, "auto"]}
+                  />
+                  <Tooltip />
+                  <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
+                  <Line
+                    type="monotone"
+                    dataKey="발가락 통증"
+                    stroke="#dc2626"
+                    strokeWidth={2}
+                    dot={{ r: 3 }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="거북목/어깨 뻐근"
+                    stroke="#f97316"
+                    strokeWidth={2}
+                    dot={{ r: 3 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* 4. 인바디 */}
+            <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+              <p className="text-sm font-semibold text-zinc-800">
+                인바디 기록
+              </p>
+
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <label className="col-span-2 block">
+                  <span className="text-xs font-semibold text-zinc-500">
+                    측정일
+                  </span>
+                  <input
+                    type="date"
+                    value={inbodyDate}
+                    onChange={(e) => setInbodyDate(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-semibold text-zinc-500">
+                    체중 (kg)
+                  </span>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={inbodyWeight}
+                    onChange={(e) => setInbodyWeight(e.target.value)}
+                    placeholder="72.5"
+                    className="mt-1 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-semibold text-zinc-500">
+                    골격근량 (kg)
+                  </span>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={inbodyMuscle}
+                    onChange={(e) => setInbodyMuscle(e.target.value)}
+                    placeholder="40.2"
+                    className="mt-1 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                  />
+                </label>
+                <label className="col-span-2 block">
+                  <span className="text-xs font-semibold text-zinc-500">
+                    체지방률 (%)
+                  </span>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={inbodyFat}
+                    onChange={(e) => setInbodyFat(e.target.value)}
+                    placeholder="18.3"
+                    className="mt-1 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                  />
+                </label>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleSaveInbody}
+                disabled={
+                  isSavingInbody ||
+                  (!inbodyWeight.trim() &&
+                    !inbodyMuscle.trim() &&
+                    !inbodyFat.trim())
+                }
+                className="mt-3 w-full touch-manipulation rounded-lg bg-zinc-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
+              >
+                {isSavingInbody ? "저장 중..." : "저장"}
+              </button>
+
+              {copyMessage ? (
+                <p className="mt-2 text-sm font-medium text-emerald-700">
+                  {copyMessage}
+                </p>
+              ) : null}
+
+              {inbodyChartData.length > 0 && (
+                <div className="mt-5">
+                  <p className="text-xs font-semibold text-zinc-500">
+                    골격근량 추이 (목표 42kg)
+                  </p>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <LineChart
+                      data={inbodyChartData}
+                      margin={{ top: 12, right: 4, left: -20, bottom: 0 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
+                      <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                      <YAxis
+                        tick={{ fontSize: 11 }}
+                        unit="kg"
+                        domain={["auto", "auto"]}
+                      />
+                      <Tooltip
+                        formatter={(v, name) => [`${v}kg`, name]}
+                      />
+                      <ReferenceLine
+                        y={42}
+                        stroke="#dc2626"
+                        strokeDasharray="4 3"
+                        label={{
+                          value: "목표 42kg",
+                          position: "insideTopRight",
+                          fontSize: 11,
+                          fill: "#dc2626",
+                        }}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="골격근량"
+                        stroke="#18181b"
+                        strokeWidth={2}
+                        dot={{ r: 3 }}
+                        activeDot={{ r: 5 }}
+                        connectNulls
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+
+                  {inbodyRecords.length > 0 && (
+                    <div className="mt-3 space-y-1.5">
+                      {[...inbodyRecords]
+                        .sort((a, b) => b.date.localeCompare(a.date))
+                        .map((r) => (
+                          <div
+                            key={r.id}
+                            className="flex items-center justify-between rounded-lg border border-zinc-100 bg-zinc-50 px-3 py-2 text-xs text-zinc-600"
+                          >
+                            <span className="font-semibold text-zinc-800">
+                              {r.date}
+                            </span>
+                            <span>
+                              {r.weight != null && `${r.weight}kg`}
+                              {r.muscleMass != null &&
+                                ` · 근 ${r.muscleMass}kg`}
+                              {r.fatPercentage != null &&
+                                ` · 지 ${r.fatPercentage}%`}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteInbody(r.id)}
+                              className="ml-2 text-zinc-400 hover:text-red-600"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
       </div>
+
+      {checklistOpen && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/60 px-4 py-8">
+          <div className="mx-auto w-full max-w-lg rounded-xl bg-white p-6 shadow-2xl">
+            <h2 className="text-lg font-bold text-zinc-950">매매 전 체크</h2>
+            <p className="mt-1 text-sm text-zinc-500">
+              모두 확인해야 완료 버튼이 활성화됩니다.
+            </p>
+
+            <div className="mt-4 space-y-3">
+              {activePrinciples.map((principle) => {
+                const isChecked = checkedPrincipleIds.has(principle.id);
+
+                return (
+                  <label
+                    key={principle.id}
+                    className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition ${
+                      isChecked
+                        ? "border-zinc-950 bg-zinc-50"
+                        : "border-zinc-200 bg-white hover:border-zinc-300"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={() => {
+                        setCheckedPrincipleIds((prev) => {
+                          const next = new Set(prev);
+
+                          if (isChecked) {
+                            next.delete(principle.id);
+                          } else {
+                            next.add(principle.id);
+                          }
+
+                          return next;
+                        });
+                      }}
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-zinc-950"
+                    />
+                    <span className="text-sm leading-6 text-zinc-800">
+                      {principle.text}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+
+            <div className="mt-6 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={handleCompletePreTradeCheck}
+                disabled={checkedPrincipleIds.size !== activePrinciples.length}
+                className="touch-manipulation rounded-lg bg-zinc-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
+              >
+                확인 완료
+              </button>
+              <button
+                type="button"
+                onClick={() => setChecklistOpen(false)}
+                className="touch-manipulation rounded-lg border border-zinc-300 bg-white px-4 py-3 text-sm font-semibold text-zinc-800 transition hover:border-zinc-950"
+              >
+                닫기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

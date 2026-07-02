@@ -4,17 +4,17 @@
     "type": "split",
     "children": [
       {
-        "id": "80777d1655def6e0",
+        "id": "a7b992fb5ab986b2",
         "type": "tabs",
         "children": [
           {
-            "id": "2af145c6ea4418de",
+            "id": "8246c4488e66ddb7",
             "type": "leaf",
             "state": {
-              "type": "empty",
+              "type": "graph",
               "state": {},
-              "icon": "lucide-file",
-              "title": "새 탭"
+              "icon": "lucide-git-fork",
+              "title": "그래프 뷰"
             }
           }
         ]
@@ -74,7 +74,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 300
+    "width": 290.5
   },
   "right": {
     "id": "e3b6ae109717061d",
@@ -176,9 +176,12 @@
       "bases:새 베이스 생성하기": false
     }
   },
-  "active": "2af145c6ea4418de",
+  "active": "47ab166dc72d9139",
   "lastOpenFiles": [
+    "무제.base",
+    "2026-05-28.md",
+    "create a link.md",
     "환영합니다!.md",
-    "create a link.md"
+    "무제.canvas"
   ]
 }
