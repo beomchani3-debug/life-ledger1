@@ -67,7 +67,7 @@ type WorkoutData = {
   bodyFlags: string[];
 };
 
-type AppView = "main" | "principles" | "weekly" | "study" | "fitness";
+type AppView = "main" | "weekly" | "fitness";
 
 type Principle = {
   id: string;
@@ -415,6 +415,21 @@ function getYesterday() {
   date.setDate(date.getDate() - 1);
 
   return formatLocalDate(date);
+}
+
+function computeStreak(records: LedgerRecord[]) {
+  const recordedDates = new Set(records.map((record) => record.date));
+  const cursor = new Date(
+    new Date().toLocaleString("en-US", { timeZone: "Asia/Seoul" }),
+  );
+  let streak = 0;
+
+  while (recordedDates.has(formatLocalDate(cursor))) {
+    streak++;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+
+  return streak;
 }
 
 function getWeekStart() {
@@ -813,24 +828,6 @@ function parseStudyNoteRow(row: RecordRow): StudyNote {
   }
 }
 
-function createStudyNotesMarkdown(studyNotes: StudyNote[]): string {
-  const active = studyNotes.filter((n) => !n.memorized);
-  const done = studyNotes.filter((n) => n.memorized);
-  const activeLines =
-    active.map((n) => `- ${n.text} (${n.date})`).join("\n") || "- 없음";
-  const doneLines =
-    done.map((n) => `- ${n.text} (${n.date})`).join("\n") || "- 없음";
-
-  return `# 에너지관리기능사 암기 노트\n\n## 미암기\n${activeLines}\n\n## 암기 완료\n${doneLines}`;
-}
-
-function createPrinciplesMarkdown(principles: Principle[]): string {
-  const active = principles.filter((p) => !p.archived);
-  const lines = active.map((p) => `- [ ] ${p.text} (${p.date})`).join("\n");
-
-  return `# 투자 원칙\n${lines || "- 원칙 없음"}`;
-}
-
 function computeWeeklySummary(
   records: LedgerRecord[],
   principles: Principle[],
@@ -1135,14 +1132,6 @@ export default function Home() {
   >(null);
   const [view, setView] = useState<AppView>("main");
   const [principles, setPrinciples] = useState<Principle[]>([]);
-  const [checklistOpen, setChecklistOpen] = useState(false);
-  const [checkedPrincipleIds, setCheckedPrincipleIds] = useState<Set<string>>(
-    new Set(),
-  );
-  const [editingPrincipleId, setEditingPrincipleId] = useState<string | null>(
-    null,
-  );
-  const [editingPrincipleText, setEditingPrincipleText] = useState("");
   const [weeklyReviews, setWeeklyReviews] = useState<WeeklyReview[]>([]);
   const [weeklyReviewQ1, setWeeklyReviewQ1] = useState("");
   const [weeklyReviewQ2, setWeeklyReviewQ2] = useState("");
@@ -1151,12 +1140,8 @@ export default function Home() {
   const [selectedWeeklyReview, setSelectedWeeklyReview] =
     useState<WeeklyReview | null>(null);
   const [isSavingReview, setIsSavingReview] = useState(false);
-  const [studyNotes, setStudyNotes] = useState<StudyNote[]>([]);
+  const [, setStudyNotes] = useState<StudyNote[]>([]);
   const [studyNote, setStudyNote] = useState("");
-  const [editingStudyNoteId, setEditingStudyNoteId] = useState<string | null>(
-    null,
-  );
-  const [editingStudyNoteText, setEditingStudyNoteText] = useState("");
   const [inbodyRecords, setInbodyRecords] = useState<InbodyRecord[]>([]);
   const [inbodyDate, setInbodyDate] = useState(() => getToday());
   const [inbodyWeight, setInbodyWeight] = useState("");
@@ -1372,6 +1357,13 @@ export default function Home() {
     [records, principles, currentWeekMonday, currentWeekSunday],
   );
 
+  const todayCategorySet = useMemo(
+    () => new Set(todayRecords.map((record) => record.category)),
+    [todayRecords],
+  );
+
+  const recordStreak = useMemo(() => computeStreak(records), [records]);
+
   const recentExercisesByBodyPart = useMemo(() => {
     const map = new Map<string, string[]>();
 
@@ -1462,32 +1454,6 @@ export default function Home() {
         중량: weight,
       }));
   }, [records, selectedFitnessExercise]);
-
-  const weeklyFlagData = useMemo(() => {
-    const flagKeys = ["발가락 통증", "거북목/어깨 뻐근"] as const;
-
-    return [-7, -6, -5, -4, -3, -2, -1, 0].map((offset) => {
-      const monday = getWeekMondayDate(offset);
-      const sunday = getWeekSundayDate(monday);
-      const weekLabel = `${Number(monday.slice(5, 7))}/${Number(monday.slice(8, 10))}`;
-      const weekRecords = records.filter(
-        (r) => r.category === "운동" && r.date >= monday && r.date <= sunday,
-      );
-      const counts: Record<string, number> = { "발가락 통증": 0, "거북목/어깨 뻐근": 0 };
-
-      for (const rec of weekRecords) {
-        const data = parseWorkoutContent(rec.content);
-        if (!data) continue;
-        for (const flag of data.bodyFlags) {
-          if ((flagKeys as readonly string[]).includes(flag)) {
-            counts[flag] = (counts[flag] ?? 0) + 1;
-          }
-        }
-      }
-
-      return { week: weekLabel, ...counts };
-    });
-  }, [records]);
 
   const inbodyChartData = useMemo(() => {
     return [...inbodyRecords]
@@ -1896,90 +1862,6 @@ export default function Home() {
     }
   }
 
-  async function handleSavePrincipleEdit() {
-    if (!editingPrincipleId) return;
-
-    const principle = principles.find((p) => p.id === editingPrincipleId);
-
-    if (!principle || !editingPrincipleText.trim()) return;
-
-    const { error } = await supabase
-      .from("records")
-      .update({
-        content: JSON.stringify({
-          type: "principle",
-          text: editingPrincipleText.trim(),
-          archived: principle.archived,
-          date: principle.date,
-        }),
-      })
-      .eq("id", editingPrincipleId);
-
-    if (!error) {
-      setPrinciples((prev) =>
-        prev.map((p) =>
-          p.id === editingPrincipleId
-            ? { ...p, text: editingPrincipleText.trim() }
-            : p,
-        ),
-      );
-      setEditingPrincipleId(null);
-      setEditingPrincipleText("");
-    }
-  }
-
-  async function handleArchivePrinciple(id: string, archived: boolean) {
-    const principle = principles.find((p) => p.id === id);
-
-    if (!principle) return;
-
-    const { error } = await supabase
-      .from("records")
-      .update({
-        content: JSON.stringify({
-          type: "principle",
-          text: principle.text,
-          archived,
-          date: principle.date,
-        }),
-      })
-      .eq("id", id);
-
-    if (!error) {
-      setPrinciples((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, archived } : p)),
-      );
-    }
-  }
-
-  async function handleDeletePrinciple(id: string) {
-    const { error } = await supabase.from("records").delete().eq("id", id);
-
-    if (!error) {
-      setPrinciples((prev) => prev.filter((p) => p.id !== id));
-    }
-  }
-
-  async function handleCompletePreTradeCheck() {
-    const active = principles.filter((p) => !p.archived);
-    const checkData: InvestmentData = {
-      type: "investment",
-      judgment: `매매 전 원칙 확인 완료 — 활성 원칙 ${active.length}개 모두 확인`,
-      emotion: { tags: ["계획됨"], note: "" },
-      principle: "",
-    };
-
-    await supabase
-      .from("records")
-      .insert({ category: "투자", content: JSON.stringify(checkData) });
-
-    setChecklistOpen(false);
-    setCheckedPrincipleIds(new Set());
-    setCopyMessage("매매 전 원칙 확인이 기록되었습니다.");
-    setErrorMessage("");
-    await fetchRecords();
-  }
-
   async function handleSaveWeeklyReview() {
     if (
       !weeklyReviewQ1.trim() &&
@@ -2099,102 +1981,6 @@ export default function Home() {
     }
   }
 
-  async function handleSaveStudyNoteEdit() {
-    if (!editingStudyNoteId) return;
-
-    const note = studyNotes.find((n) => n.id === editingStudyNoteId);
-
-    if (!note || !editingStudyNoteText.trim()) return;
-
-    const { error } = await supabase
-      .from("records")
-      .update({
-        content: JSON.stringify({
-          type: "study_note",
-          text: editingStudyNoteText.trim(),
-          memorized: note.memorized,
-          date: note.date,
-        }),
-      })
-      .eq("id", editingStudyNoteId);
-
-    if (!error) {
-      setStudyNotes((prev) =>
-        prev.map((n) =>
-          n.id === editingStudyNoteId
-            ? { ...n, text: editingStudyNoteText.trim() }
-            : n,
-        ),
-      );
-      setEditingStudyNoteId(null);
-      setEditingStudyNoteText("");
-    }
-  }
-
-  async function handleToggleMemorized(id: string, memorized: boolean) {
-    const note = studyNotes.find((n) => n.id === id);
-
-    if (!note) return;
-
-    const { error } = await supabase
-      .from("records")
-      .update({
-        content: JSON.stringify({
-          type: "study_note",
-          text: note.text,
-          memorized,
-          date: note.date,
-        }),
-      })
-      .eq("id", id);
-
-    if (!error) {
-      setStudyNotes((prev) =>
-        prev.map((n) => (n.id === id ? { ...n, memorized } : n)),
-      );
-    }
-  }
-
-  async function handleDeleteStudyNote(id: string) {
-    const { error } = await supabase.from("records").delete().eq("id", id);
-
-    if (!error) {
-      setStudyNotes((prev) => prev.filter((n) => n.id !== id));
-    }
-  }
-
-  function handleExportStudyNotes() {
-    const markdown = createStudyNotesMarkdown(studyNotes);
-    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
-    const objectUrl = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-
-    link.href = objectUrl;
-    link.download = "에너지관리기능사 암기 노트.md";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(objectUrl);
-    setCopyMessage("에너지관리기능사 암기 노트.md 다운로드되었습니다.");
-    setErrorMessage("");
-  }
-
-  function handleExportPrinciples() {
-    const markdown = createPrinciplesMarkdown(principles);
-    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
-    const objectUrl = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-
-    link.href = objectUrl;
-    link.download = "투자 원칙.md";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(objectUrl);
-    setCopyMessage("투자 원칙.md 파일이 다운로드되었습니다.");
-    setErrorMessage("");
-  }
-
   function handleDownloadMarkdown(markdown: string, date: string) {
     const blob = new Blob([markdown], {
       type: "text/markdown;charset=utf-8",
@@ -2270,9 +2056,6 @@ export default function Home() {
     );
   }
 
-  const activePrinciples = principles.filter((p) => !p.archived);
-  const archivedPrinciples = principles.filter((p) => p.archived);
-
   return (
     <main className="min-h-screen bg-stone-50 px-4 py-6 text-zinc-950 sm:px-6">
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
@@ -2287,22 +2070,6 @@ export default function Home() {
             }`}
           >
             기록
-          </button>
-          <button
-            type="button"
-            onClick={() => setView("principles")}
-            className={`flex-1 rounded-lg px-2 py-2.5 text-xs font-semibold transition ${
-              view === "principles"
-                ? "bg-white text-zinc-950 shadow-sm"
-                : "text-zinc-500 hover:text-zinc-700"
-            }`}
-          >
-            투자원칙
-            {activePrinciples.length > 0 && (
-              <span className="ml-1 rounded-full bg-zinc-200 px-1.5 py-0.5 text-xs">
-                {activePrinciples.length}
-              </span>
-            )}
           </button>
           <button
             type="button"
@@ -2330,22 +2097,6 @@ export default function Home() {
           </button>
           <button
             type="button"
-            onClick={() => setView("study")}
-            className={`flex-1 rounded-lg px-2 py-2.5 text-xs font-semibold transition ${
-              view === "study"
-                ? "bg-white text-zinc-950 shadow-sm"
-                : "text-zinc-500 hover:text-zinc-700"
-            }`}
-          >
-            공부노트
-            {studyNotes.filter((n) => !n.memorized).length > 0 && (
-              <span className="ml-1 rounded-full bg-zinc-200 px-1.5 py-0.5 text-xs">
-                {studyNotes.filter((n) => !n.memorized).length}
-              </span>
-            )}
-          </button>
-          <button
-            type="button"
             onClick={() => setView("fitness")}
             className={`flex-1 rounded-lg px-2 py-2.5 text-xs font-semibold transition ${
               view === "fitness"
@@ -2359,6 +2110,42 @@ export default function Home() {
 
         {view === "main" ? (
           <>
+            <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-semibold text-zinc-800">
+                  오늘 요약
+                </p>
+                <p className="text-xs font-semibold text-zinc-500">
+                  🔥 연속 {recordStreak}일
+                </p>
+              </div>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                {inputCategories.map((category) => {
+                  const recorded = todayCategorySet.has(category);
+                  const label = category === "공부/콘텐츠" ? "공부" : category;
+
+                  return (
+                    <span
+                      key={category}
+                      className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-semibold ${
+                        recorded
+                          ? "border-zinc-950 bg-zinc-950 text-white"
+                          : "border-zinc-200 bg-zinc-50 text-zinc-400"
+                      }`}
+                    >
+                      <span>{recorded ? "●" : "○"}</span>
+                      {label}
+                    </span>
+                  );
+                })}
+              </div>
+
+              <p className="mt-3 text-xs text-zinc-500">
+                이번 주 운동 기록 {weeklySummary.workoutCount}회 / 7일
+              </p>
+            </section>
+
             <section className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm sm:p-7">
               <div className="flex items-start justify-between gap-4">
             <div className="space-y-2">
@@ -3167,179 +2954,6 @@ export default function Home() {
           )}
         </section>
           </>
-        ) : view === "principles" ? (
-          <section className="space-y-4">
-            <div className="flex items-end justify-between gap-3">
-              <div>
-                <h2 className="text-lg font-bold text-zinc-950">투자 원칙</h2>
-                <p className="mt-1 text-sm text-zinc-500">
-                  활성 {activePrinciples.length}개
-                  {archivedPrinciples.length > 0 &&
-                    ` · 보관 ${archivedPrinciples.length}개`}
-                </p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setCheckedPrincipleIds(new Set());
-                  setChecklistOpen(true);
-                }}
-                disabled={activePrinciples.length === 0}
-                className="touch-manipulation rounded-lg bg-zinc-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
-              >
-                매매 전 체크
-              </button>
-              <button
-                type="button"
-                onClick={handleExportPrinciples}
-                disabled={principles.length === 0}
-                className="touch-manipulation rounded-lg border border-zinc-300 bg-white px-4 py-3 text-sm font-semibold text-zinc-800 transition hover:border-zinc-950 disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-300"
-              >
-                내보내기 .md
-              </button>
-            </div>
-
-            {copyMessage ? (
-              <p className="text-sm font-medium text-emerald-700">
-                {copyMessage}
-              </p>
-            ) : null}
-
-            <div className="space-y-2">
-              {activePrinciples.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-zinc-300 bg-white p-6 text-center text-sm text-zinc-500">
-                  아직 원칙이 없습니다. 투자 기록의 &quot;다음 원칙&quot; 필드를 채워보세요.
-                </div>
-              ) : (
-                activePrinciples.map((principle) => (
-                  <div
-                    key={principle.id}
-                    className="rounded-lg border border-zinc-200 bg-white p-4"
-                  >
-                    {editingPrincipleId === principle.id ? (
-                      <div className="space-y-2">
-                        <textarea
-                          value={editingPrincipleText}
-                          onChange={(e) =>
-                            setEditingPrincipleText(e.target.value)
-                          }
-                          className="w-full resize-none rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm leading-6 text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
-                          rows={3}
-                        />
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            onClick={handleSavePrincipleEdit}
-                            disabled={!editingPrincipleText.trim()}
-                            className="touch-manipulation rounded-lg bg-zinc-950 px-3 py-2 text-xs font-semibold text-white transition hover:bg-zinc-800 disabled:bg-zinc-300"
-                          >
-                            저장
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingPrincipleId(null);
-                              setEditingPrincipleText("");
-                            }}
-                            className="touch-manipulation rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950"
-                          >
-                            취소
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <p className="text-sm leading-6 text-zinc-800">
-                          {principle.text}
-                        </p>
-                        <div className="mt-2 flex items-center justify-between gap-2">
-                          <time className="text-xs text-zinc-400">
-                            {principle.date}
-                          </time>
-                          <div className="flex gap-1">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingPrincipleId(principle.id);
-                                setEditingPrincipleText(principle.text);
-                              }}
-                              className="touch-manipulation rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-semibold text-zinc-600 transition hover:border-zinc-950 hover:text-zinc-950"
-                            >
-                              수정
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                handleArchivePrinciple(principle.id, true)
-                              }
-                              className="touch-manipulation rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-semibold text-zinc-600 transition hover:border-zinc-950 hover:text-zinc-950"
-                            >
-                              보관
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                handleDeletePrinciple(principle.id)
-                              }
-                              className="touch-manipulation rounded-lg border border-red-200 px-2.5 py-1.5 text-xs font-semibold text-red-600 transition hover:border-red-700"
-                            >
-                              삭제
-                            </button>
-                          </div>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-
-            {archivedPrinciples.length > 0 && (
-              <details className="rounded-lg border border-zinc-200 bg-white">
-                <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-zinc-600 hover:text-zinc-950">
-                  보관된 원칙 ({archivedPrinciples.length})
-                </summary>
-                <div className="space-y-2 border-t border-zinc-100 p-4">
-                  {archivedPrinciples.map((principle) => (
-                    <div
-                      key={principle.id}
-                      className="rounded-lg border border-zinc-100 bg-zinc-50 p-3"
-                    >
-                      <p className="text-sm leading-6 text-zinc-500">
-                        {principle.text}
-                      </p>
-                      <div className="mt-2 flex items-center justify-between gap-2">
-                        <time className="text-xs text-zinc-400">
-                          {principle.date}
-                        </time>
-                        <div className="flex gap-1">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleArchivePrinciple(principle.id, false)
-                            }
-                            className="touch-manipulation rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-semibold text-zinc-600 transition hover:border-zinc-950"
-                          >
-                            복원
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeletePrinciple(principle.id)}
-                            className="touch-manipulation rounded-lg border border-red-200 px-2.5 py-1.5 text-xs font-semibold text-red-600 transition hover:border-red-700"
-                          >
-                            삭제
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </details>
-            )}
-          </section>
         ) : view === "weekly" ? (
           <section className="space-y-4">
             <div className="flex items-center justify-between gap-3">
@@ -3685,168 +3299,6 @@ export default function Home() {
               </div>
             )}
           </section>
-        ) : view === "study" ? (
-          <section className="space-y-4">
-            <div className="flex items-end justify-between gap-3">
-              <div>
-                <h2 className="text-lg font-bold text-zinc-950">공부 노트</h2>
-                <p className="mt-1 text-sm text-zinc-500">
-                  미암기 {studyNotes.filter((n) => !n.memorized).length}개
-                  {studyNotes.filter((n) => n.memorized).length > 0 &&
-                    ` · 암기 완료 ${studyNotes.filter((n) => n.memorized).length}개`}
-                </p>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleExportStudyNotes}
-              disabled={studyNotes.length === 0}
-              className="w-full touch-manipulation rounded-lg border border-zinc-300 bg-white px-4 py-3 text-sm font-semibold text-zinc-800 transition hover:border-zinc-950 disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-300"
-            >
-              내보내기 .md
-            </button>
-
-            {copyMessage ? (
-              <p className="text-sm font-medium text-emerald-700">
-                {copyMessage}
-              </p>
-            ) : null}
-
-            <div className="space-y-2">
-              {studyNotes.filter((n) => !n.memorized).length === 0 ? (
-                <div className="rounded-lg border border-dashed border-zinc-300 bg-white p-6 text-center text-sm text-zinc-500">
-                  공부/콘텐츠 기록의 &quot;핵심 암기&quot; 필드를 채워보세요.
-                </div>
-              ) : (
-                studyNotes
-                  .filter((n) => !n.memorized)
-                  .map((note) => (
-                    <div
-                      key={note.id}
-                      className="rounded-lg border border-zinc-200 bg-white p-4"
-                    >
-                      {editingStudyNoteId === note.id ? (
-                        <div className="space-y-2">
-                          <textarea
-                            value={editingStudyNoteText}
-                            onChange={(e) =>
-                              setEditingStudyNoteText(e.target.value)
-                            }
-                            className="w-full resize-none rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm leading-6 text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
-                            rows={2}
-                          />
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={handleSaveStudyNoteEdit}
-                              disabled={!editingStudyNoteText.trim()}
-                              className="touch-manipulation rounded-lg bg-zinc-950 px-3 py-2 text-xs font-semibold text-white transition hover:bg-zinc-800 disabled:bg-zinc-300"
-                            >
-                              저장
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingStudyNoteId(null);
-                                setEditingStudyNoteText("");
-                              }}
-                              className="touch-manipulation rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-950"
-                            >
-                              취소
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <>
-                          <p className="text-sm leading-6 text-zinc-800">
-                            {note.text}
-                          </p>
-                          <div className="mt-2 flex items-center justify-between gap-2">
-                            <time className="text-xs text-zinc-400">
-                              {note.date}
-                            </time>
-                            <div className="flex gap-1">
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleToggleMemorized(note.id, true)
-                                }
-                                className="touch-manipulation rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-semibold text-zinc-600 transition hover:border-zinc-950 hover:text-zinc-950"
-                              >
-                                암기 완료
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setEditingStudyNoteId(note.id);
-                                  setEditingStudyNoteText(note.text);
-                                }}
-                                className="touch-manipulation rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-semibold text-zinc-600 transition hover:border-zinc-950 hover:text-zinc-950"
-                              >
-                                수정
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteStudyNote(note.id)}
-                                className="touch-manipulation rounded-lg border border-red-200 px-2.5 py-1.5 text-xs font-semibold text-red-600 transition hover:border-red-700"
-                              >
-                                삭제
-                              </button>
-                            </div>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  ))
-              )}
-            </div>
-
-            {studyNotes.filter((n) => n.memorized).length > 0 && (
-              <details className="rounded-lg border border-zinc-200 bg-white">
-                <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-zinc-600 hover:text-zinc-950">
-                  암기 완료 ({studyNotes.filter((n) => n.memorized).length})
-                </summary>
-                <div className="space-y-2 border-t border-zinc-100 p-4">
-                  {studyNotes
-                    .filter((n) => n.memorized)
-                    .map((note) => (
-                      <div
-                        key={note.id}
-                        className="rounded-lg border border-zinc-100 bg-zinc-50 p-3"
-                      >
-                        <p className="text-sm leading-6 text-zinc-500">
-                          {note.text}
-                        </p>
-                        <div className="mt-2 flex items-center justify-between gap-2">
-                          <time className="text-xs text-zinc-400">
-                            {note.date}
-                          </time>
-                          <div className="flex gap-1">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                handleToggleMemorized(note.id, false)
-                              }
-                              className="touch-manipulation rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-semibold text-zinc-600 transition hover:border-zinc-950"
-                            >
-                              미암기로
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteStudyNote(note.id)}
-                              className="touch-manipulation rounded-lg border border-red-200 px-2.5 py-1.5 text-xs font-semibold text-red-600 transition hover:border-red-700"
-                            >
-                              삭제
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                </div>
-              </details>
-            )}
-          </section>
         ) : (
           <section className="space-y-5">
             <h2 className="text-lg font-bold text-zinc-950">운동 현황</h2>
@@ -3949,43 +3401,6 @@ export default function Home() {
                   )}
                 </>
               )}
-            </div>
-
-            {/* 3. 몸 상태 플래그 추이 */}
-            <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
-              <p className="text-sm font-semibold text-zinc-800">
-                몸 상태 플래그 추이 (최근 8주)
-              </p>
-              <ResponsiveContainer width="100%" height={180}>
-                <LineChart
-                  data={weeklyFlagData}
-                  margin={{ top: 8, right: 4, left: -20, bottom: 0 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
-                  <XAxis dataKey="week" tick={{ fontSize: 11 }} />
-                  <YAxis
-                    tick={{ fontSize: 11 }}
-                    allowDecimals={false}
-                    domain={[0, "auto"]}
-                  />
-                  <Tooltip />
-                  <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
-                  <Line
-                    type="monotone"
-                    dataKey="발가락 통증"
-                    stroke="#dc2626"
-                    strokeWidth={2}
-                    dot={{ r: 3 }}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="거북목/어깨 뻐근"
-                    stroke="#f97316"
-                    strokeWidth={2}
-                    dot={{ r: 3 }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
             </div>
 
             {/* 4. 인바디 */}
@@ -4146,74 +3561,6 @@ export default function Home() {
           </section>
         )}
       </div>
-
-      {checklistOpen && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/60 px-4 py-8">
-          <div className="mx-auto w-full max-w-lg rounded-xl bg-white p-6 shadow-2xl">
-            <h2 className="text-lg font-bold text-zinc-950">매매 전 체크</h2>
-            <p className="mt-1 text-sm text-zinc-500">
-              모두 확인해야 완료 버튼이 활성화됩니다.
-            </p>
-
-            <div className="mt-4 space-y-3">
-              {activePrinciples.map((principle) => {
-                const isChecked = checkedPrincipleIds.has(principle.id);
-
-                return (
-                  <label
-                    key={principle.id}
-                    className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition ${
-                      isChecked
-                        ? "border-zinc-950 bg-zinc-50"
-                        : "border-zinc-200 bg-white hover:border-zinc-300"
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isChecked}
-                      onChange={() => {
-                        setCheckedPrincipleIds((prev) => {
-                          const next = new Set(prev);
-
-                          if (isChecked) {
-                            next.delete(principle.id);
-                          } else {
-                            next.add(principle.id);
-                          }
-
-                          return next;
-                        });
-                      }}
-                      className="mt-0.5 h-4 w-4 shrink-0 accent-zinc-950"
-                    />
-                    <span className="text-sm leading-6 text-zinc-800">
-                      {principle.text}
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-
-            <div className="mt-6 grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={handleCompletePreTradeCheck}
-                disabled={checkedPrincipleIds.size !== activePrinciples.length}
-                className="touch-manipulation rounded-lg bg-zinc-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
-              >
-                확인 완료
-              </button>
-              <button
-                type="button"
-                onClick={() => setChecklistOpen(false)}
-                className="touch-manipulation rounded-lg border border-zinc-300 bg-white px-4 py-3 text-sm font-semibold text-zinc-800 transition hover:border-zinc-950"
-              >
-                닫기
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </main>
   );
 }
