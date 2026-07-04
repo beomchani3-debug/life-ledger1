@@ -98,14 +98,6 @@ type WeeklyReview = {
   createdAt: string;
 };
 
-type StudyNote = {
-  id: string;
-  text: string;
-  date: string;
-  memorized: boolean;
-  createdAt: string;
-};
-
 type InbodyRecord = {
   id: string;
   date: string;
@@ -113,6 +105,13 @@ type InbodyRecord = {
   muscleMass: number | null;
   fatPercentage: number | null;
   createdAt: string;
+};
+
+type BackupEntry = {
+  id: string;
+  category: string;
+  content: string;
+  created_at: string;
 };
 
 type WeeklySummary = {
@@ -323,15 +322,6 @@ function normalizeCategory(value: string): Category {
   return "가치관";
 }
 
-function formatDate(value: string) {
-  const date = new Date(value);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-
-  return `${year}-${month}-${day}`;
-}
-
 function formatLocalDate(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -342,6 +332,10 @@ function formatLocalDate(date: Date) {
 
 function formatKoreanDate(date: Date) {
   return koreanDateFormatter.format(date);
+}
+
+function formatDate(value: string) {
+  return formatKoreanDate(new Date(value));
 }
 
 function getKoreanToday() {
@@ -802,32 +796,6 @@ function parsePrincipleRow(row: RecordRow): Principle {
   }
 }
 
-function parseStudyNoteRow(row: RecordRow): StudyNote {
-  try {
-    const parsed = JSON.parse(row.content) as {
-      text: string;
-      memorized: boolean;
-      date: string;
-    };
-
-    return {
-      id: row.id,
-      text: parsed.text ?? "",
-      date: parsed.date ?? formatDate(row.created_at),
-      memorized: parsed.memorized ?? false,
-      createdAt: row.created_at,
-    };
-  } catch {
-    return {
-      id: row.id,
-      text: row.content,
-      date: formatDate(row.created_at),
-      memorized: false,
-      createdAt: row.created_at,
-    };
-  }
-}
-
 function computeWeeklySummary(
   records: LedgerRecord[],
   principles: Principle[],
@@ -1065,31 +1033,169 @@ function parseInbodyRow(row: RecordRow): InbodyRecord {
   }
 }
 
-function backupRecord(record: Pick<LedgerRecord, "category" | "content">) {
-  const backupRecord = {
+function loadBackupRecords(): BackupEntry[] {
+  try {
+    const raw = window.localStorage.getItem(BACKUP_STORAGE_KEY);
+    if (!raw) return [];
+
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? (parsed as BackupEntry[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveBackupRecords(entries: BackupEntry[]) {
+  window.localStorage.setItem(BACKUP_STORAGE_KEY, JSON.stringify(entries));
+}
+
+function backupRecord(record: { category: string; content: string }): BackupEntry {
+  const entry: BackupEntry = {
     id: crypto.randomUUID(),
     category: record.category,
     content: record.content,
     created_at: new Date().toISOString(),
   };
 
-  try {
-    const existingBackup = window.localStorage.getItem(BACKUP_STORAGE_KEY);
-    const parsedBackup = existingBackup
-      ? (JSON.parse(existingBackup) as unknown)
-      : [];
-    const backupRecords = Array.isArray(parsedBackup) ? parsedBackup : [];
+  saveBackupRecords([entry, ...loadBackupRecords()]);
 
-    window.localStorage.setItem(
-      BACKUP_STORAGE_KEY,
-      JSON.stringify([backupRecord, ...backupRecords]),
-    );
-  } catch {
-    window.localStorage.setItem(
-      BACKUP_STORAGE_KEY,
-      JSON.stringify([backupRecord]),
-    );
+  return entry;
+}
+
+function removeBackupEntry(id: string): BackupEntry[] {
+  const remaining = loadBackupRecords().filter((entry) => entry.id !== id);
+
+  saveBackupRecords(remaining);
+
+  return remaining;
+}
+
+function getBackupPreviewText(entry: BackupEntry): string {
+  if (entry.category === "투자") {
+    const data = parseInvestmentContent(entry.content);
+    if (data) {
+      return (
+        [data.judgment, data.emotion.note, data.principle]
+          .filter(Boolean)
+          .join(" · ") || "(내용 없음)"
+      );
+    }
   }
+
+  if (entry.category === "운동") {
+    const data = parseWorkoutContent(entry.content);
+    if (data) {
+      return data.memo.trim() || `세트 ${data.sets.length}개`;
+    }
+  }
+
+  if (entry.category === "주간회고") {
+    try {
+      const data = JSON.parse(entry.content) as {
+        q1?: string;
+        q2?: string;
+        q3?: string;
+      };
+
+      return (
+        [data.q1, data.q2, data.q3].filter(Boolean).join(" · ") ||
+        "(내용 없음)"
+      );
+    } catch {
+      return entry.content;
+    }
+  }
+
+  if (entry.category === "인바디") {
+    try {
+      const data = JSON.parse(entry.content) as {
+        weight?: string;
+        muscleMass?: string;
+        fatPercentage?: string;
+      };
+
+      return (
+        [
+          data.weight && `체중 ${data.weight}kg`,
+          data.muscleMass && `근 ${data.muscleMass}kg`,
+          data.fatPercentage && `지방 ${data.fatPercentage}%`,
+        ]
+          .filter(Boolean)
+          .join(" · ") || "(내용 없음)"
+      );
+    } catch {
+      return entry.content;
+    }
+  }
+
+  return entry.content;
+}
+
+function WeeklyReviewForm({
+  initialQ1,
+  initialQ2,
+  initialQ3,
+  onChangeQ1,
+  onChangeQ2,
+  onChangeQ3,
+}: {
+  initialQ1: string;
+  initialQ2: string;
+  initialQ3: string;
+  onChangeQ1: (value: string) => void;
+  onChangeQ2: (value: string) => void;
+  onChangeQ3: (value: string) => void;
+}) {
+  const [q1, setQ1] = useState(initialQ1);
+  const [q2, setQ2] = useState(initialQ2);
+  const [q3, setQ3] = useState(initialQ3);
+
+  return (
+    <div className="space-y-3">
+      <label className="block">
+        <span className="text-sm font-semibold text-zinc-800">
+          1. 이번 주 가장 잘한 결정은?
+        </span>
+        <textarea
+          value={q1}
+          onChange={(e) => {
+            setQ1(e.target.value);
+            onChangeQ1(e.target.value);
+          }}
+          placeholder="자유롭게 적어보세요."
+          className="mt-2 min-h-20 w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+        />
+      </label>
+      <label className="block">
+        <span className="text-sm font-semibold text-zinc-800">
+          2. 반복하고 싶지 않은 것은?
+        </span>
+        <textarea
+          value={q2}
+          onChange={(e) => {
+            setQ2(e.target.value);
+            onChangeQ2(e.target.value);
+          }}
+          placeholder="자유롭게 적어보세요."
+          className="mt-2 min-h-20 w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+        />
+      </label>
+      <label className="block">
+        <span className="text-sm font-semibold text-zinc-800">
+          3. 다음 주에 딱 하나만 바꾼다면?
+        </span>
+        <textarea
+          value={q3}
+          onChange={(e) => {
+            setQ3(e.target.value);
+            onChangeQ3(e.target.value);
+          }}
+          placeholder="자유롭게 적어보세요."
+          className="mt-2 min-h-20 w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+        />
+      </label>
+    </div>
+  );
 }
 
 export default function Home() {
@@ -1133,6 +1239,7 @@ export default function Home() {
   const [view, setView] = useState<AppView>("main");
   const [principles, setPrinciples] = useState<Principle[]>([]);
   const [weeklyReviews, setWeeklyReviews] = useState<WeeklyReview[]>([]);
+  const [weeklyReviewsLoaded, setWeeklyReviewsLoaded] = useState(false);
   const [weeklyReviewQ1, setWeeklyReviewQ1] = useState("");
   const [weeklyReviewQ2, setWeeklyReviewQ2] = useState("");
   const [weeklyReviewQ3, setWeeklyReviewQ3] = useState("");
@@ -1140,8 +1247,6 @@ export default function Home() {
   const [selectedWeeklyReview, setSelectedWeeklyReview] =
     useState<WeeklyReview | null>(null);
   const [isSavingReview, setIsSavingReview] = useState(false);
-  const [, setStudyNotes] = useState<StudyNote[]>([]);
-  const [studyNote, setStudyNote] = useState("");
   const [inbodyRecords, setInbodyRecords] = useState<InbodyRecord[]>([]);
   const [inbodyDate, setInbodyDate] = useState(() => getToday());
   const [inbodyWeight, setInbodyWeight] = useState("");
@@ -1149,6 +1254,18 @@ export default function Home() {
   const [inbodyFat, setInbodyFat] = useState("");
   const [isSavingInbody, setIsSavingInbody] = useState(false);
   const [selectedFitnessExercise, setSelectedFitnessExercise] = useState("");
+  const [backupEntries, setBackupEntries] = useState<BackupEntry[]>([]);
+  const [deletingBackupId, setDeletingBackupId] = useState<string | null>(null);
+
+  const refreshBackupEntries = useCallback(() => {
+    setBackupEntries(loadBackupRecords());
+  }, []);
+
+  useEffect(() => {
+    queueMicrotask(() => {
+      refreshBackupEntries();
+    });
+  }, [refreshBackupEntries]);
 
   const fetchRecords = useCallback(async () => {
     setIsLoading(true);
@@ -1171,7 +1288,6 @@ export default function Home() {
     const weeklyReviewRows = rawData.filter(
       (row) => row.category === "주간회고",
     );
-    const studyNoteRows = rawData.filter((row) => row.category === "공부노트");
     const inbodyRows = rawData.filter((row) => row.category === "인바디");
     const recordRows = rawData.filter(
       (row) =>
@@ -1185,7 +1301,7 @@ export default function Home() {
     setRecords(recordRows.map(mapRecordRow));
     setPrinciples(fetchedPrinciples);
     setWeeklyReviews(weeklyReviewRows.map(parseWeeklyReviewRow));
-    setStudyNotes(studyNoteRows.map(parseStudyNoteRow));
+    setWeeklyReviewsLoaded(true);
     setInbodyRecords(inbodyRows.map(parseInbodyRow));
     setIsLoading(false);
 
@@ -1193,8 +1309,6 @@ export default function Home() {
       const alreadySeeded = window.localStorage.getItem(PRINCIPLES_SEEDED_KEY);
 
       if (!alreadySeeded) {
-        window.localStorage.setItem(PRINCIPLES_SEEDED_KEY, "true");
-
         const results = await Promise.all(
           INITIAL_PRINCIPLES.map((item) =>
             supabase
@@ -1212,6 +1326,14 @@ export default function Home() {
               .single(),
           ),
         );
+
+        const allSucceeded = results.every(
+          (r) => !r.error && r.data !== null,
+        );
+
+        if (allSucceeded) {
+          window.localStorage.setItem(PRINCIPLES_SEEDED_KEY, "true");
+        }
 
         const seeded = results
           .filter((r) => r.data !== null)
@@ -1268,18 +1390,6 @@ export default function Home() {
 
     return () => clearTimeout(timer);
   }, [authStatus]);
-
-  useEffect(() => {
-    if (view !== "weekly" || weeklyReviewListMode) return;
-    const existing = weeklyReviews.find((r) => r.weekId === currentWeekId);
-    if (existing) {
-      setWeeklyReviewQ1(existing.q1);
-      setWeeklyReviewQ2(existing.q2);
-      setWeeklyReviewQ3(existing.q3);
-    }
-    // Only fire when entering weekly write view
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, weeklyReviewListMode]);
 
   const isEditing = editingRecordId !== null;
   const investmentHasContent =
@@ -1338,9 +1448,10 @@ export default function Home() {
   const currentWeekId = getISOWeekId(currentWeekMonday);
   const lastWeekId = getISOWeekId(getWeekMondayDate(-1));
 
-  const weeklyReviewExists = weeklyReviews.some(
+  const existingWeeklyReview = weeklyReviews.find(
     (r) => r.weekId === currentWeekId,
   );
+  const weeklyReviewExists = existingWeeklyReview !== undefined;
   const hasMissingWeeklyReview = !weeklyReviews.some(
     (r) => r.weekId === lastWeekId,
   );
@@ -1353,7 +1464,6 @@ export default function Home() {
         currentWeekMonday,
         currentWeekSunday,
       ),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [records, principles, currentWeekMonday, currentWeekSunday],
   );
 
@@ -1486,7 +1596,14 @@ export default function Home() {
         type: "workout",
         sets: workoutSets
           .filter((s) => s.exercise.trim() || s.duration.trim())
-          .map(({ id: _id, ...rest }) => rest),
+          .map((s) => ({
+            bodyPart: s.bodyPart,
+            exercise: s.exercise,
+            weight: s.weight,
+            reps: s.reps,
+            duration: s.duration,
+            intensity: s.intensity,
+          })),
         memo: workoutMemo.trim(),
         bodyFlags: workoutBodyFlags,
       };
@@ -1548,7 +1665,6 @@ export default function Home() {
     setRecords([]);
     setEditingRecordId(null);
     setContent("");
-    setStudyNote("");
     setInvestmentJudgment("");
     setInvestmentEmotionTags([]);
     setInvestmentEmotionNote("");
@@ -1580,7 +1696,14 @@ export default function Home() {
         type: "workout",
         sets: workoutSets
           .filter((s) => s.exercise.trim() || s.duration.trim())
-          .map(({ id: _id, ...rest }) => rest),
+          .map((s) => ({
+            bodyPart: s.bodyPart,
+            exercise: s.exercise,
+            weight: s.weight,
+            reps: s.reps,
+            duration: s.duration,
+            intensity: s.intensity,
+          })),
         memo: workoutMemo.trim(),
         bodyFlags: workoutBodyFlags,
       };
@@ -1616,6 +1739,7 @@ export default function Home() {
           category: selectedCategory,
           content: saveContent,
         });
+        refreshBackupEntries();
         setErrorMessage(
           `저장에 실패했습니다: ${error.message}. 이 브라우저에 백업을 남겼습니다.`,
         );
@@ -1625,7 +1749,6 @@ export default function Home() {
     }
 
     setContent("");
-    setStudyNote("");
     setInvestmentJudgment("");
     setInvestmentEmotionTags([]);
     setInvestmentEmotionNote("");
@@ -1646,28 +1769,6 @@ export default function Home() {
     setEditingRecordId(null);
     setIsSaving(false);
     setCopyMessage(isEditing ? "기록이 수정되었습니다." : "저장되었습니다.");
-
-    if (!isEditing && selectedCategory === "공부/콘텐츠" && studyNote.trim()) {
-      const noteContent = JSON.stringify({
-        type: "study_note",
-        text: studyNote.trim(),
-        memorized: false,
-        date: today,
-      });
-
-      const { data: noteData } = await supabase
-        .from("records")
-        .insert({ category: "공부노트", content: noteContent })
-        .select("id, category, content, created_at")
-        .single();
-
-      if (noteData) {
-        setStudyNotes((prev) => [
-          parseStudyNoteRow(noteData as RecordRow),
-          ...prev,
-        ]);
-      }
-    }
 
     if (!isEditing && selectedCategory === "투자" && investmentPrinciple.trim()) {
       const principleContent = JSON.stringify({
@@ -1788,7 +1889,6 @@ export default function Home() {
       }
     } else {
       setContent(record.content);
-      setStudyNote("");
       setInvestmentJudgment("");
       setInvestmentEmotionTags([]);
       setInvestmentEmotionNote("");
@@ -1803,7 +1903,6 @@ export default function Home() {
   function handleCancelEdit() {
     setEditingRecordId(null);
     setContent("");
-    setStudyNote("");
     setInvestmentJudgment("");
     setInvestmentEmotionTags([]);
     setInvestmentEmotionNote("");
@@ -1871,6 +1970,8 @@ export default function Home() {
       return;
 
     setIsSavingReview(true);
+    setErrorMessage("");
+    setCopyMessage("");
 
     const data: WeeklyReviewData = {
       type: "weekly_review",
@@ -1884,20 +1985,27 @@ export default function Home() {
 
     const existing = weeklyReviews.find((r) => r.weekId === currentWeekId);
 
-    if (existing) {
-      await supabase
-        .from("records")
-        .update({ content: JSON.stringify(data) })
-        .eq("id", existing.id);
-    } else {
-      await supabase
-        .from("records")
-        .insert({ category: "주간회고", content: JSON.stringify(data) });
-    }
+    const { error } = existing
+      ? await supabase
+          .from("records")
+          .update({ content: JSON.stringify(data) })
+          .eq("id", existing.id)
+      : await supabase
+          .from("records")
+          .insert({ category: "주간회고", content: JSON.stringify(data) });
 
     setIsSavingReview(false);
+
+    if (error) {
+      backupRecord({ category: "주간회고", content: JSON.stringify(data) });
+      refreshBackupEntries();
+      setErrorMessage(
+        `주간 회고 저장에 실패했습니다: ${error.message}. 이 브라우저에 백업을 남겼습니다.`,
+      );
+      return;
+    }
+
     setCopyMessage("주간 회고가 저장되었습니다.");
-    setErrorMessage("");
     await fetchRecords();
   }
 
@@ -1942,6 +2050,8 @@ export default function Home() {
     if (!inbodyWeight.trim() && !inbodyMuscle.trim() && !inbodyFat.trim()) return;
 
     setIsSavingInbody(true);
+    setErrorMessage("");
+    setCopyMessage("");
 
     const content = JSON.stringify({
       type: "inbody",
@@ -1951,11 +2061,22 @@ export default function Home() {
       fatPercentage: inbodyFat.trim(),
     });
 
-    const { data: newRow } = await supabase
+    const { data: newRow, error } = await supabase
       .from("records")
       .insert({ category: "인바디", content })
       .select("id, category, content, created_at")
       .single();
+
+    setIsSavingInbody(false);
+
+    if (error) {
+      backupRecord({ category: "인바디", content });
+      refreshBackupEntries();
+      setErrorMessage(
+        `인바디 저장에 실패했습니다: ${error.message}. 이 브라우저에 백업을 남겼습니다.`,
+      );
+      return;
+    }
 
     if (newRow) {
       setInbodyRecords((prev) => [
@@ -1968,9 +2089,7 @@ export default function Home() {
     setInbodyMuscle("");
     setInbodyFat("");
     setInbodyDate(getToday());
-    setIsSavingInbody(false);
     setCopyMessage("인바디 기록이 저장되었습니다.");
-    setErrorMessage("");
   }
 
   async function handleDeleteInbody(id: string) {
@@ -1979,6 +2098,33 @@ export default function Home() {
     if (!error) {
       setInbodyRecords((prev) => prev.filter((r) => r.id !== id));
     }
+  }
+
+  async function handleRetryBackup(entry: BackupEntry) {
+    setDeletingBackupId(entry.id);
+    setErrorMessage("");
+    setCopyMessage("");
+
+    const { error } = await supabase
+      .from("records")
+      .insert({ category: entry.category, content: entry.content });
+
+    setDeletingBackupId(null);
+
+    if (error) {
+      setErrorMessage(`다시 저장에 실패했습니다: ${error.message}`);
+      return;
+    }
+
+    setBackupEntries(removeBackupEntry(entry.id));
+    setCopyMessage("백업을 다시 저장했습니다.");
+    await fetchRecords();
+  }
+
+  function handleDeleteBackup(id: string) {
+    setBackupEntries(removeBackupEntry(id));
+    setCopyMessage("백업을 삭제했습니다.");
+    setErrorMessage("");
   }
 
   function handleDownloadMarkdown(markdown: string, date: string) {
@@ -2107,6 +2253,12 @@ export default function Home() {
             운동현황
           </button>
         </div>
+
+        {backupEntries.length > 0 ? (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs font-semibold text-amber-800">
+            ⚠ 저장 실패 백업 {backupEntries.length}건이 있습니다. 기록 탭 하단에서 확인하세요.
+          </div>
+        ) : null}
 
         {view === "main" ? (
           <>
@@ -2354,7 +2506,7 @@ export default function Home() {
                               )
                             }
                             placeholder="운동명"
-                            className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                            className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-base text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
                           />
                           {workoutExerciseFocus === set.id &&
                             suggestions.length > 0 && (
@@ -2389,7 +2541,7 @@ export default function Home() {
                                   )
                                 }
                                 placeholder="시간(분)"
-                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-base text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
                               />
                               <input
                                 type="text"
@@ -2402,7 +2554,7 @@ export default function Home() {
                                   )
                                 }
                                 placeholder="강도"
-                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-base text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
                               />
                             </>
                           ) : (
@@ -2418,7 +2570,7 @@ export default function Home() {
                                   )
                                 }
                                 placeholder="중량(kg)"
-                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-base text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
                               />
                               <input
                                 type="text"
@@ -2431,7 +2583,7 @@ export default function Home() {
                                   )
                                 }
                                 placeholder="횟수"
-                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-base text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
                               />
                             </>
                           )}
@@ -2515,22 +2667,6 @@ export default function Home() {
                   className="mt-2 min-h-40 w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
                 />
               </label>
-              {selectedCategory === "공부/콘텐츠" && !isEditing && (
-                <label className="block">
-                  <span className="text-sm font-semibold text-zinc-800">
-                    핵심 암기
-                  </span>
-                  <p className="mt-1 text-xs text-zinc-500">
-                    공부 노트에 쌓을 암기 항목 — 없으면 비워두세요
-                  </p>
-                  <textarea
-                    value={studyNote}
-                    onChange={(e) => setStudyNote(e.target.value)}
-                    placeholder="예: y = Kp × e (비례동작)"
-                    className="mt-2 min-h-20 w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
-                  />
-                </label>
-              )}
             </div>
           )}
 
@@ -2953,6 +3089,61 @@ export default function Home() {
             </div>
           )}
         </section>
+
+        {backupEntries.length > 0 ? (
+          <section className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-sm font-bold text-amber-900">
+                저장 실패 백업함
+              </h2>
+              <span className="rounded-full bg-amber-200 px-2.5 py-0.5 text-xs font-semibold text-amber-900">
+                {backupEntries.length}건
+              </span>
+            </div>
+            <p className="text-xs text-amber-700">
+              네트워크 문제로 저장되지 못한 기록입니다. 다시 저장하거나 삭제하세요.
+            </p>
+            <div className="space-y-2">
+              {backupEntries.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="rounded-lg border border-amber-200 bg-white p-3"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
+                      {entry.category}
+                    </span>
+                    <time className="text-xs text-zinc-400">
+                      {formatDate(entry.created_at)}
+                    </time>
+                  </div>
+                  <p className="mt-2 line-clamp-2 text-sm text-zinc-700">
+                    {getBackupPreviewText(entry)}
+                  </p>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleRetryBackup(entry)}
+                      disabled={deletingBackupId === entry.id}
+                      className="touch-manipulation rounded-lg border border-zinc-950 bg-zinc-950 px-3 py-2 text-xs font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:border-zinc-300 disabled:bg-zinc-300"
+                    >
+                      {deletingBackupId === entry.id
+                        ? "저장 중..."
+                        : "다시 저장"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteBackup(entry.id)}
+                      className="touch-manipulation rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-semibold text-red-700 transition hover:border-red-700"
+                    >
+                      삭제
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
           </>
         ) : view === "weekly" ? (
           <section className="space-y-4">
@@ -3103,41 +3294,15 @@ export default function Home() {
                   )}
                 </div>
 
-                <div className="space-y-3">
-                  <label className="block">
-                    <span className="text-sm font-semibold text-zinc-800">
-                      1. 이번 주 가장 잘한 결정은?
-                    </span>
-                    <textarea
-                      value={weeklyReviewQ1}
-                      onChange={(e) => setWeeklyReviewQ1(e.target.value)}
-                      placeholder="자유롭게 적어보세요."
-                      className="mt-2 min-h-20 w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="text-sm font-semibold text-zinc-800">
-                      2. 반복하고 싶지 않은 것은?
-                    </span>
-                    <textarea
-                      value={weeklyReviewQ2}
-                      onChange={(e) => setWeeklyReviewQ2(e.target.value)}
-                      placeholder="자유롭게 적어보세요."
-                      className="mt-2 min-h-20 w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="text-sm font-semibold text-zinc-800">
-                      3. 다음 주에 딱 하나만 바꾼다면?
-                    </span>
-                    <textarea
-                      value={weeklyReviewQ3}
-                      onChange={(e) => setWeeklyReviewQ3(e.target.value)}
-                      placeholder="자유롭게 적어보세요."
-                      className="mt-2 min-h-20 w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
-                    />
-                  </label>
-                </div>
+                <WeeklyReviewForm
+                  key={`${currentWeekId}-${weeklyReviewsLoaded ? "ready" : "loading"}`}
+                  initialQ1={existingWeeklyReview?.q1 ?? ""}
+                  initialQ2={existingWeeklyReview?.q2 ?? ""}
+                  initialQ3={existingWeeklyReview?.q3 ?? ""}
+                  onChangeQ1={setWeeklyReviewQ1}
+                  onChangeQ2={setWeeklyReviewQ2}
+                  onChangeQ3={setWeeklyReviewQ3}
+                />
 
                 <div className="grid grid-cols-2 gap-2">
                   <button
@@ -3360,7 +3525,7 @@ export default function Home() {
                     onChange={(e) =>
                       setSelectedFitnessExercise(e.target.value)
                     }
-                    className="mt-3 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                    className="mt-3 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-base text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
                   >
                     <option value="">운동 선택</option>
                     {fitnessExerciseNames.map((name) => (
@@ -3418,7 +3583,7 @@ export default function Home() {
                     type="date"
                     value={inbodyDate}
                     onChange={(e) => setInbodyDate(e.target.value)}
-                    className="mt-1 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                    className="mt-1 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-base text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
                   />
                 </label>
                 <label className="block">
@@ -3431,7 +3596,7 @@ export default function Home() {
                     value={inbodyWeight}
                     onChange={(e) => setInbodyWeight(e.target.value)}
                     placeholder="72.5"
-                    className="mt-1 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                    className="mt-1 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-base text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
                   />
                 </label>
                 <label className="block">
@@ -3444,7 +3609,7 @@ export default function Home() {
                     value={inbodyMuscle}
                     onChange={(e) => setInbodyMuscle(e.target.value)}
                     placeholder="40.2"
-                    className="mt-1 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                    className="mt-1 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-base text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
                   />
                 </label>
                 <label className="col-span-2 block">
@@ -3457,7 +3622,7 @@ export default function Home() {
                     value={inbodyFat}
                     onChange={(e) => setInbodyFat(e.target.value)}
                     placeholder="18.3"
-                    className="mt-1 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                    className="mt-1 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-base text-zinc-950 outline-none focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
                   />
                 </label>
               </div>
