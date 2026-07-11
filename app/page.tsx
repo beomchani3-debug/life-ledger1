@@ -62,6 +62,8 @@ type WorkoutSetInput = WorkoutSet & { id: string };
 
 type WorkoutData = {
   type: "workout";
+  mode?: "free" | "detailed";
+  freeText?: string;
   sets: WorkoutSet[];
   memo: string;
   bodyFlags: string[];
@@ -149,10 +151,63 @@ const BODY_PART_COLORS: Record<string, string> = {
 const WORKOUT_BODY_FLAGS = [
   "발가락 통증",
   "통풍 증상",
+  "무릎 불편",
   "거북목/어깨 뻐근",
   "수면 부족",
   "컨디션 좋음",
   "없음",
+] as const;
+
+const WORKOUT_FREE_TEXT_PLACEHOLDER = `보조 풀업
+60kg 12
+50kg 10
+50kg 10
+40kg 8
+
+보조 딥스
+60kg 12
+50kg 10
+50kg 10
+
+시티드 로우
+25kg 20
+32.5kg 15
+40kg 12
+
+메모:
+등 자극 좋았음.`;
+
+const WORKOUT_JOURNAL_PLACEHOLDER = `오늘 운동 기록을 자유롭게 입력하세요.
+
+운동:
+내용:
+몸 상태:
+평가:`;
+
+const WORKOUT_EXAMPLE_TEXT = `운동: 가슴 + 어깨 / 70분
+
+내용:
+- 벤치프레스 40kg 10, 50kg 8, 60kg 5
+- 숄더프레스 머신 30kg 12, 40kg 8
+- 사이드레터럴 7kg 15x3
+
+몸 상태:
+무릎 통증 없음 / 발가락 불편함 없음 / 컨디션 보통
+
+평가:
+가슴 자극은 좋았고, 어깨는 후반에 힘이 빨리 빠졌다.`;
+
+const WORKOUT_AUTO_TAG_RULES = [
+  { tag: "가슴", keywords: ["가슴", "벤치프레스"] },
+  { tag: "등", keywords: ["등", "풀업", "로우", "랫풀다운"] },
+  { tag: "어깨", keywords: ["어깨", "숄더", "사이드레터럴"] },
+  { tag: "팔", keywords: ["팔", "이두", "삼두", "컬"] },
+  { tag: "하체", keywords: ["하체", "스쿼트", "레그", "런지"] },
+  { tag: "코어", keywords: ["코어", "복근", "플랭크"] },
+  { tag: "유산소", keywords: ["유산소", "러닝", "런닝", "걷기", "자전거"] },
+  { tag: "무릎관리", keywords: ["무릎"] },
+  { tag: "통풍관리", keywords: ["통풍", "발가락"] },
+  { tag: "컨디션", keywords: ["컨디션", "몸 상태", "피로"] },
 ] as const;
 
 const BACKUP_STORAGE_KEY = "life-ledger:backup-records";
@@ -456,21 +511,83 @@ function mapRecordRow(row: RecordRow): LedgerRecord {
   };
 }
 
+function getWorkoutPlainText(content: string): string {
+  const data = parseWorkoutContent(content);
+
+  if (!data) {
+    return content;
+  }
+
+  if (data.mode === "free") {
+    return data.freeText?.trim() ?? "";
+  }
+
+  return formatWorkoutBody(data);
+}
+
+function extractBracketTags(content: string) {
+  const tags: string[] = [];
+  const tagPattern = /\[\[([^\]\n]+)\]\]/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = tagPattern.exec(content)) !== null) {
+    const tag = match[1].trim();
+
+    if (tag && tag !== "운동" && !tags.includes(tag)) {
+      tags.push(tag);
+    }
+  }
+
+  return tags;
+}
+
+function getWorkoutConnectionTags(content: string) {
+  const directTags = extractBracketTags(content);
+
+  if (directTags.length > 0) {
+    return ["운동", ...directTags];
+  }
+
+  const normalizedContent = content.toLowerCase();
+  const autoTags = WORKOUT_AUTO_TAG_RULES.filter(({ keywords }) =>
+    keywords.some((keyword) =>
+      normalizedContent.includes(keyword.toLowerCase()),
+    ),
+  )
+    .map(({ tag }) => tag)
+    .slice(0, 3);
+
+  return ["운동", ...autoTags];
+}
+
+function createWorkoutMarkdown(content: string) {
+  const body = getWorkoutPlainText(content).trim();
+  const tags = getWorkoutConnectionTags(body)
+    .map((tag) => `[[${tag}]]`)
+    .join("\n");
+
+  return `## 운동
+
+${body}
+
+## 연결 태그
+${tags}`;
+}
+
 function createMarkdown(
   record: Pick<LedgerRecord, "date" | "category" | "content">,
 ) {
+  if (record.category === "운동") {
+    return createWorkoutMarkdown(record.content);
+  }
+
   const body =
     record.category === "투자"
       ? (() => {
           const data = parseInvestmentContent(record.content);
           return data ? formatInvestmentBody(data) : record.content;
         })()
-      : record.category === "운동"
-        ? (() => {
-            const data = parseWorkoutContent(record.content);
-            return data ? formatWorkoutBody(data) : record.content;
-          })()
-        : record.content;
+      : record.content;
 
   return `# ${record.date} 기록
 
@@ -493,7 +610,7 @@ function extractRecordText(record: LedgerRecord): string {
 
   if (record.category === "운동") {
     const data = parseWorkoutContent(record.content);
-    if (data) return data.memo;
+    if (data) return data.mode === "free" ? (data.freeText ?? "") : data.memo;
   }
 
   return record.content;
@@ -730,29 +847,95 @@ function parseWorkoutContent(content: string): WorkoutData | null {
   }
 }
 
-function formatWorkoutBody(data: WorkoutData): string {
-  const parts: string[] = [];
+type WorkoutDisplayGroup = {
+  label: string;
+  items: string[];
+  isSetList: boolean;
+};
+
+const FREE_WORKOUT_SET_LINE = /^([\d.]+)\s*kg\s+([\d.]+)\s*(?:회)?$/i;
+
+function parseFreeWorkoutText(text: string): WorkoutDisplayGroup[] {
+  const blocks = text
+    .split(/\n\s*\n/)
+    .map((b) => b.trim())
+    .filter(Boolean);
+
+  return blocks.map((block) => {
+    const lines = block
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const label = (lines[0] ?? "").replace(/:$/, "");
+    const rest = lines.slice(1);
+    const isSetList =
+      rest.length > 0 && rest.every((l) => FREE_WORKOUT_SET_LINE.test(l));
+
+    const items = isSetList
+      ? rest.map((l) => {
+          const m = l.match(FREE_WORKOUT_SET_LINE)!;
+          return `${m[1]}kg × ${m[2]}회`;
+        })
+      : rest;
+
+    return { label, items, isSetList };
+  });
+}
+
+function getWorkoutDisplayGroups(data: WorkoutData): WorkoutDisplayGroup[] {
+  if (data.mode === "free") {
+    return parseFreeWorkoutText(data.freeText ?? "");
+  }
 
   const validSets = data.sets.filter(
     (s) => s.exercise.trim() || s.duration.trim(),
   );
+  const groups = new Map<string, WorkoutSet[]>();
 
-  if (validSets.length > 0) {
-    const header = "| 부위 | 운동 | 중량/횟수 |\n| --- | --- | --- |";
-    const rows = validSets.map((s) => {
-      const metric =
+  for (const s of validSets) {
+    const key = `${s.bodyPart || "-"}__${s.exercise || "-"}`;
+    const list = groups.get(key) ?? [];
+    list.push(s);
+    groups.set(key, list);
+  }
+
+  return Array.from(groups.values()).map((sets) => {
+    const first = sets[0];
+    const label = first.bodyPart
+      ? `[${first.bodyPart}] ${first.exercise || "(운동명 없음)"}`
+      : first.exercise || "(운동명 없음)";
+    const items = sets
+      .map((s) =>
         s.bodyPart === "유산소"
           ? [s.duration && `${s.duration}분`, s.intensity && `강도 ${s.intensity}`]
               .filter(Boolean)
               .join(" ")
           : [s.weight && `${s.weight}kg`, s.reps && `${s.reps}회`]
               .filter(Boolean)
-              .join(" ");
+              .join(" "),
+      )
+      .filter(Boolean);
 
-      return `| ${s.bodyPart} | ${s.exercise} | ${metric} |`;
+    return { label, items, isSetList: true };
+  });
+}
+
+function formatWorkoutBody(data: WorkoutData): string {
+  const parts: string[] = [];
+  const groups = getWorkoutDisplayGroups(data);
+
+  if (groups.length > 0) {
+    const sections = groups.map((g) => {
+      if (g.items.length === 0) return `**${g.label}**`;
+
+      const body = g.isSetList
+        ? g.items.map((item) => `- ${item}`).join("\n")
+        : g.items.join("\n");
+
+      return `**${g.label}**\n${body}`;
     });
 
-    parts.push(`### 운동 기록\n${header}\n${rows.join("\n")}`);
+    parts.push(`### 운동 기록\n${sections.join("\n\n")}`);
   }
 
   if (data.bodyFlags.length > 0) {
@@ -763,7 +946,7 @@ function formatWorkoutBody(data: WorkoutData): string {
     parts.push(`### 몸 상태\n${tags}`);
   }
 
-  if (data.memo.trim()) {
+  if (data.mode !== "free" && data.memo.trim()) {
     parts.push(`### 메모\n${data.memo.trim()}`);
   }
 
@@ -1085,6 +1268,9 @@ function getBackupPreviewText(entry: BackupEntry): string {
   if (entry.category === "운동") {
     const data = parseWorkoutContent(entry.content);
     if (data) {
+      if (data.mode === "free") {
+        return data.freeText?.trim().slice(0, 40) || "(내용 없음)";
+      }
       return data.memo.trim() || `세트 ${data.sets.length}개`;
     }
   }
@@ -1233,6 +1419,8 @@ export default function Home() {
   ]);
   const [workoutMemo, setWorkoutMemo] = useState("");
   const [workoutBodyFlags, setWorkoutBodyFlags] = useState<string[]>([]);
+  const [workoutMode, setWorkoutMode] = useState<"free" | "detailed">("free");
+  const [workoutFreeText, setWorkoutFreeText] = useState("");
   const [workoutExerciseFocus, setWorkoutExerciseFocus] = useState<
     string | null
   >(null);
@@ -1397,12 +1585,7 @@ export default function Home() {
     investmentEmotionTags.length > 0 ||
     investmentEmotionNote.trim().length > 0 ||
     investmentPrinciple.trim().length > 0;
-  const workoutHasContent =
-    workoutSets.some(
-      (s) => s.exercise.trim() || s.weight.trim() || s.reps.trim() || s.duration.trim(),
-    ) ||
-    workoutMemo.trim().length > 0 ||
-    workoutBodyFlags.length > 0;
+  const workoutHasContent = content.trim().length > 0;
   const canSave =
     (selectedCategory === "투자"
       ? investmentHasContent
@@ -1576,6 +1759,37 @@ export default function Home() {
       }));
   }, [inbodyRecords]);
 
+  const buildWorkoutData = useCallback((): WorkoutData => {
+    if (workoutMode === "free") {
+      return {
+        type: "workout",
+        mode: "free",
+        freeText: workoutFreeText.trim(),
+        sets: [],
+        memo: "",
+        bodyFlags: workoutBodyFlags,
+      };
+    }
+
+    return {
+      type: "workout",
+      mode: "detailed",
+      freeText: "",
+      sets: workoutSets
+        .filter((s) => s.exercise.trim() || s.duration.trim())
+        .map((s) => ({
+          bodyPart: s.bodyPart,
+          exercise: s.exercise,
+          weight: s.weight,
+          reps: s.reps,
+          duration: s.duration,
+          intensity: s.intensity,
+        })),
+      memo: workoutMemo.trim(),
+      bodyFlags: workoutBodyFlags,
+    };
+  }, [workoutMode, workoutFreeText, workoutSets, workoutMemo, workoutBodyFlags]);
+
   const draftMarkdown = useMemo(() => {
     if (selectedCategory === "투자") {
       const data: InvestmentData = {
@@ -1592,23 +1806,7 @@ export default function Home() {
     }
 
     if (selectedCategory === "운동") {
-      const data: WorkoutData = {
-        type: "workout",
-        sets: workoutSets
-          .filter((s) => s.exercise.trim() || s.duration.trim())
-          .map((s) => ({
-            bodyPart: s.bodyPart,
-            exercise: s.exercise,
-            weight: s.weight,
-            reps: s.reps,
-            duration: s.duration,
-            intensity: s.intensity,
-          })),
-        memo: workoutMemo.trim(),
-        bodyFlags: workoutBodyFlags,
-      };
-
-      return `# ${today} 기록\n\n## 카테고리\n- 운동\n\n## 내용\n${formatWorkoutBody(data)}`;
+      return createWorkoutMarkdown(content.trim());
     }
 
     return createMarkdown({
@@ -1624,9 +1822,6 @@ export default function Home() {
     investmentEmotionTags,
     investmentEmotionNote,
     investmentPrinciple,
-    workoutSets,
-    workoutMemo,
-    workoutBodyFlags,
   ]);
 
   const todayMarkdown = useMemo(
@@ -1692,23 +1887,7 @@ export default function Home() {
     } else if (selectedCategory === "운동") {
       if (!workoutHasContent) return;
 
-      const data: WorkoutData = {
-        type: "workout",
-        sets: workoutSets
-          .filter((s) => s.exercise.trim() || s.duration.trim())
-          .map((s) => ({
-            bodyPart: s.bodyPart,
-            exercise: s.exercise,
-            weight: s.weight,
-            reps: s.reps,
-            duration: s.duration,
-            intensity: s.intensity,
-          })),
-        memo: workoutMemo.trim(),
-        bodyFlags: workoutBodyFlags,
-      };
-
-      saveContent = JSON.stringify(data);
+      saveContent = content.trim();
     } else {
       saveContent = content.trim();
       if (!saveContent) return;
@@ -1753,19 +1932,7 @@ export default function Home() {
     setInvestmentEmotionTags([]);
     setInvestmentEmotionNote("");
     setInvestmentPrinciple("");
-    setWorkoutSets([
-      {
-        id: crypto.randomUUID(),
-        bodyPart: "",
-        exercise: "",
-        weight: "",
-        reps: "",
-        duration: "",
-        intensity: "",
-      },
-    ]);
-    setWorkoutMemo("");
-    setWorkoutBodyFlags([]);
+    resetWorkoutState();
     setEditingRecordId(null);
     setIsSaving(false);
     setCopyMessage(isEditing ? "기록이 수정되었습니다." : "저장되었습니다.");
@@ -1842,6 +2009,7 @@ export default function Home() {
     ]);
     setWorkoutMemo("");
     setWorkoutBodyFlags([]);
+    setWorkoutFreeText("");
   }
 
   function handleEdit(record: LedgerRecord) {
@@ -1858,35 +2026,12 @@ export default function Home() {
       setInvestmentPrinciple(data ? data.principle : "");
       resetWorkoutState();
     } else if (record.category === "운동") {
-      const data = parseWorkoutContent(record.content);
-
-      setContent("");
+      setContent(getWorkoutPlainText(record.content));
       setInvestmentJudgment("");
       setInvestmentEmotionTags([]);
       setInvestmentEmotionNote("");
       setInvestmentPrinciple("");
-
-      if (data) {
-        setWorkoutSets(
-          data.sets.map((s) => ({ ...s, id: crypto.randomUUID() })),
-        );
-        setWorkoutMemo(data.memo);
-        setWorkoutBodyFlags(data.bodyFlags);
-      } else {
-        setWorkoutSets([
-          {
-            id: crypto.randomUUID(),
-            bodyPart: "",
-            exercise: "",
-            weight: "",
-            reps: "",
-            duration: "",
-            intensity: "",
-          },
-        ]);
-        setWorkoutMemo(record.content);
-        setWorkoutBodyFlags([]);
-      }
+      resetWorkoutState();
     } else {
       setContent(record.content);
       setInvestmentJudgment("");
@@ -2435,212 +2580,24 @@ export default function Home() {
                 </span>
               ) : null}
 
-              <div>
-                <p className="text-sm font-semibold text-zinc-800">세트</p>
-                <div className="mt-2 space-y-3">
-                  {workoutSets.map((set, index) => {
-                    const isCardio = set.bodyPart === "유산소";
-                    const suggestions = (
-                      recentExercisesByBodyPart.get(set.bodyPart) ?? []
-                    )
-                      .filter(
-                        (e) =>
-                          set.exercise &&
-                          e
-                            .toLowerCase()
-                            .includes(set.exercise.toLowerCase()),
-                      )
-                      .slice(0, 5);
-
-                    return (
-                      <div
-                        key={set.id}
-                        className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 space-y-2"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-semibold text-zinc-500">
-                            세트 {index + 1}
-                          </span>
-                          {workoutSets.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => removeWorkoutSet(set.id)}
-                              className="text-xs text-zinc-400 hover:text-red-600"
-                            >
-                              ✕
-                            </button>
-                          )}
-                        </div>
-
-                        <div className="flex flex-wrap gap-1">
-                          {WORKOUT_BODY_PARTS.map((part) => (
-                            <button
-                              key={part}
-                              type="button"
-                              onClick={() =>
-                                updateWorkoutSet(set.id, "bodyPart", part)
-                              }
-                              className={`touch-manipulation rounded-full border px-2.5 py-1 text-xs font-medium transition ${
-                                set.bodyPart === part
-                                  ? "border-zinc-950 bg-zinc-950 text-white"
-                                  : "border-zinc-200 bg-white text-zinc-600 hover:border-zinc-400"
-                              }`}
-                            >
-                              {part}
-                            </button>
-                          ))}
-                        </div>
-
-                        <div className="relative">
-                          <input
-                            type="text"
-                            value={set.exercise}
-                            onChange={(e) =>
-                              updateWorkoutSet(set.id, "exercise", e.target.value)
-                            }
-                            onFocus={() => setWorkoutExerciseFocus(set.id)}
-                            onBlur={() =>
-                              setTimeout(
-                                () => setWorkoutExerciseFocus(null),
-                                150,
-                              )
-                            }
-                            placeholder="운동명"
-                            className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-base text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
-                          />
-                          {workoutExerciseFocus === set.id &&
-                            suggestions.length > 0 && (
-                              <div className="absolute top-full z-10 mt-1 w-full rounded-lg border border-zinc-200 bg-white shadow-lg">
-                                {suggestions.map((s) => (
-                                  <button
-                                    key={s}
-                                    type="button"
-                                    onMouseDown={() =>
-                                      updateWorkoutSet(set.id, "exercise", s)
-                                    }
-                                    className="w-full px-3 py-2 text-left text-sm text-zinc-700 hover:bg-zinc-50"
-                                  >
-                                    {s}
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          {isCardio ? (
-                            <>
-                              <input
-                                type="text"
-                                value={set.duration}
-                                onChange={(e) =>
-                                  updateWorkoutSet(
-                                    set.id,
-                                    "duration",
-                                    e.target.value,
-                                  )
-                                }
-                                placeholder="시간(분)"
-                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-base text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
-                              />
-                              <input
-                                type="text"
-                                value={set.intensity}
-                                onChange={(e) =>
-                                  updateWorkoutSet(
-                                    set.id,
-                                    "intensity",
-                                    e.target.value,
-                                  )
-                                }
-                                placeholder="강도"
-                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-base text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
-                              />
-                            </>
-                          ) : (
-                            <>
-                              <input
-                                type="text"
-                                value={set.weight}
-                                onChange={(e) =>
-                                  updateWorkoutSet(
-                                    set.id,
-                                    "weight",
-                                    e.target.value,
-                                  )
-                                }
-                                placeholder="중량(kg)"
-                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-base text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
-                              />
-                              <input
-                                type="text"
-                                value={set.reps}
-                                onChange={(e) =>
-                                  updateWorkoutSet(
-                                    set.id,
-                                    "reps",
-                                    e.target.value,
-                                  )
-                                }
-                                placeholder="횟수"
-                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-base text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
-                              />
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <button
-                  type="button"
-                  onClick={addWorkoutSet}
-                  className="mt-2 w-full touch-manipulation rounded-lg border border-dashed border-zinc-300 py-2.5 text-sm font-semibold text-zinc-500 transition hover:border-zinc-950 hover:text-zinc-950"
-                >
-                  + 세트 추가
-                </button>
-              </div>
-
-              <div>
-                <p className="text-sm font-semibold text-zinc-800">몸 상태</p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {WORKOUT_BODY_FLAGS.map((flag) => {
-                    const isFlagSelected = workoutBodyFlags.includes(flag);
-
-                    return (
-                      <button
-                        key={flag}
-                        type="button"
-                        onClick={() =>
-                          setWorkoutBodyFlags((prev) =>
-                            isFlagSelected
-                              ? prev.filter((f) => f !== flag)
-                              : [...prev, flag],
-                          )
-                        }
-                        className={`touch-manipulation rounded-full border px-3 py-1.5 text-sm font-medium transition ${
-                          isFlagSelected
-                            ? "border-zinc-950 bg-zinc-950 text-white"
-                            : "border-zinc-200 bg-zinc-50 text-zinc-700 hover:border-zinc-300 hover:bg-white"
-                        }`}
-                      >
-                        {flag}
-                      </button>
-                    );
-                  })}
-                </div>
+              <div className="rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-3">
+                <p className="text-sm font-semibold text-zinc-800">
+                  기록 내용 안내
+                </p>
+                <pre className="mt-2 whitespace-pre-wrap font-sans text-sm leading-6 text-zinc-600">
+                  {WORKOUT_EXAMPLE_TEXT}
+                </pre>
               </div>
 
               <label className="block">
                 <span className="text-sm font-semibold text-zinc-800">
-                  운동 메모
+                  자유 입력
                 </span>
                 <textarea
-                  value={workoutMemo}
-                  onChange={(e) => setWorkoutMemo(e.target.value)}
-                  placeholder="기타 메모 (선택)"
-                  className="mt-2 min-h-20 w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
+                  value={content}
+                  onChange={(event) => setContent(event.target.value)}
+                  placeholder={WORKOUT_JOURNAL_PLACEHOLDER}
+                  className="mt-2 min-h-64 w-full resize-y rounded-lg border border-zinc-200 bg-white px-4 py-3 text-base leading-7 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-4 focus:ring-zinc-950/10"
                 />
               </label>
             </div>
@@ -2937,58 +2894,36 @@ export default function Home() {
                                 );
                               }
 
+                              const groups = getWorkoutDisplayGroups(data);
+
                               return (
-                                <div className="mt-3 space-y-2 text-sm text-zinc-700">
-                                  {data.sets.filter((s) => s.exercise).length >
-                                    0 && (
-                                    <div className="overflow-x-auto">
-                                      <table className="w-full text-left text-xs">
-                                        <thead>
-                                          <tr className="text-zinc-400">
-                                            <th className="pr-3 pb-1 font-semibold">
-                                              부위
-                                            </th>
-                                            <th className="pr-3 pb-1 font-semibold">
-                                              운동
-                                            </th>
-                                            <th className="pb-1 font-semibold">
-                                              중량/횟수
-                                            </th>
-                                          </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-zinc-100">
-                                          {data.sets
-                                            .filter((s) => s.exercise)
-                                            .map((s, i) => (
-                                              <tr key={i}>
-                                                <td className="py-1 pr-3 text-zinc-500">
-                                                  {s.bodyPart}
-                                                </td>
-                                                <td className="py-1 pr-3">
-                                                  {s.exercise}
-                                                </td>
-                                                <td className="py-1 text-zinc-600">
-                                                  {s.bodyPart === "유산소"
-                                                    ? [
-                                                        s.duration &&
-                                                          `${s.duration}분`,
-                                                        s.intensity &&
-                                                          `강도 ${s.intensity}`,
-                                                      ]
-                                                        .filter(Boolean)
-                                                        .join(" ")
-                                                    : [
-                                                        s.weight &&
-                                                          `${s.weight}kg`,
-                                                        s.reps && `${s.reps}회`,
-                                                      ]
-                                                        .filter(Boolean)
-                                                        .join(" ")}
-                                                </td>
-                                              </tr>
+                                <div className="mt-3 space-y-3 text-sm text-zinc-700">
+                                  {groups.length > 0 && (
+                                    <div className="space-y-2">
+                                      {groups.map((g, i) => (
+                                        <div key={i}>
+                                          <p className="text-xs font-semibold text-zinc-500">
+                                            {g.label}
+                                          </p>
+                                          {g.items.length > 0 &&
+                                            (g.isSetList ? (
+                                              <ul className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+                                                {g.items.map((item, j) => (
+                                                  <li
+                                                    key={j}
+                                                    className="text-xs text-zinc-600"
+                                                  >
+                                                    {item}
+                                                  </li>
+                                                ))}
+                                              </ul>
+                                            ) : (
+                                              <p className="mt-0.5 whitespace-pre-wrap text-zinc-600">
+                                                {g.items.join("\n")}
+                                              </p>
                                             ))}
-                                        </tbody>
-                                      </table>
+                                        </div>
+                                      ))}
                                     </div>
                                   )}
                                   {data.bodyFlags.length > 0 && (
@@ -3003,7 +2938,7 @@ export default function Home() {
                                       ))}
                                     </div>
                                   )}
-                                  {data.memo && (
+                                  {data.mode !== "free" && data.memo && (
                                     <p className="whitespace-pre-wrap text-zinc-600">
                                       {data.memo}
                                     </p>
