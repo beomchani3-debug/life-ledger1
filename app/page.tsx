@@ -18,8 +18,9 @@ import {
 import { supabase } from "@/src/lib/supabase";
 
 const inputCategories = ["일기", "투자", "운동", "공부/콘텐츠", "가치관"] as const;
+const visibleInputCategories = ["일기", "운동"] as const;
 const categories = [...inputCategories, "지출"] as const;
-const filterCategories = ["전체", ...categories] as const;
+const filterCategories = ["전체", ...visibleInputCategories] as const;
 const periodFilters = ["오늘", "어제", "이번 주", "전체"] as const;
 
 type Category = (typeof categories)[number];
@@ -114,6 +115,13 @@ type BackupEntry = {
   category: string;
   content: string;
   created_at: string;
+};
+
+type SupabaseErrorLike = {
+  code?: string;
+  message?: string;
+  details?: string;
+  hint?: string;
 };
 
 type WeeklySummary = {
@@ -213,6 +221,16 @@ const WORKOUT_AUTO_TAG_RULES = [
 const BACKUP_STORAGE_KEY = "life-ledger:backup-records";
 const AUTH_STORAGE_KEY = "life-ledger:is-authenticated";
 const PRINCIPLES_SEEDED_KEY = "life-ledger:principles-seeded";
+
+function logSupabaseError(scope: string, error: SupabaseErrorLike) {
+  console.error(`[Life Ledger] Supabase ${scope} failed`, {
+    code: error.code ?? null,
+    message: error.message ?? null,
+    details: error.details ?? null,
+    hint: error.hint ?? null,
+  });
+}
+
 const INITIAL_PRINCIPLES = [
   { text: "프리장 급락만 보고 즉흥 매매하지 않기", date: "2026-06-23" },
   {
@@ -1233,6 +1251,16 @@ function saveBackupRecords(entries: BackupEntry[]) {
 }
 
 function backupRecord(record: { category: string; content: string }): BackupEntry {
+  const currentEntries = loadBackupRecords();
+  const existing = currentEntries.find(
+    (entry) =>
+      entry.category === record.category && entry.content === record.content,
+  );
+
+  if (existing) {
+    return existing;
+  }
+
   const entry: BackupEntry = {
     id: crypto.randomUUID(),
     category: record.category,
@@ -1240,7 +1268,7 @@ function backupRecord(record: { category: string; content: string }): BackupEntr
     created_at: new Date().toISOString(),
   };
 
-  saveBackupRecords([entry, ...loadBackupRecords()]);
+  saveBackupRecords([entry, ...currentEntries]);
 
   return entry;
 }
@@ -1396,6 +1424,7 @@ export default function Home() {
   const [records, setRecords] = useState<LedgerRecord[]>([]);
   const [copyMessage, setCopyMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [recordLoadError, setRecordLoadError] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [deletingRecordId, setDeletingRecordId] = useState<string | null>(null);
@@ -1443,6 +1472,7 @@ export default function Home() {
   const [isSavingInbody, setIsSavingInbody] = useState(false);
   const [selectedFitnessExercise, setSelectedFitnessExercise] = useState("");
   const [backupEntries, setBackupEntries] = useState<BackupEntry[]>([]);
+  const [retryingBackupId, setRetryingBackupId] = useState<string | null>(null);
   const [deletingBackupId, setDeletingBackupId] = useState<string | null>(null);
 
   const refreshBackupEntries = useCallback(() => {
@@ -1458,6 +1488,7 @@ export default function Home() {
   const fetchRecords = useCallback(async () => {
     setIsLoading(true);
     setErrorMessage("");
+    setRecordLoadError(false);
 
     const { data, error } = await supabase
       .from("records")
@@ -1465,7 +1496,11 @@ export default function Home() {
       .order("created_at", { ascending: false });
 
     if (error) {
-      setErrorMessage(`기록을 불러오지 못했습니다: ${error.message}`);
+      logSupabaseError("select records", error);
+      setRecordLoadError(true);
+      setErrorMessage(
+        "기록을 불러오지 못했습니다. Supabase 연결 또는 권한 설정을 확인한 뒤 다시 시도하세요.",
+      );
       setRecords([]);
       setIsLoading(false);
       return;
@@ -1897,7 +1932,7 @@ export default function Home() {
     setErrorMessage("");
     setCopyMessage("");
 
-    const { error } = isEditing
+    const { data: savedRow, error } = isEditing
       ? await supabase
           .from("records")
           .update({
@@ -1905,14 +1940,28 @@ export default function Home() {
             content: saveContent,
           })
           .eq("id", editingRecordId)
+          .select("id, category, content, created_at")
+          .single()
       : await supabase.from("records").insert({
           category: selectedCategory,
           content: saveContent,
-        });
+        }).select("id, category, content, created_at")
+          .single();
 
-    if (error) {
+    if (error || !savedRow) {
+      if (error) {
+        logSupabaseError(isEditing ? "update record" : "insert record", error);
+      } else {
+        console.error("[Life Ledger] Supabase saved no record row", {
+          category: selectedCategory,
+          hasContent: saveContent.length > 0,
+        });
+      }
+
       if (isEditing) {
-        setErrorMessage(`수정에 실패했습니다. ${error.message}`);
+        setErrorMessage(
+          "수정에 실패했습니다. 기록은 삭제하지 않았고, 개발자 콘솔에 상세 원인을 남겼습니다.",
+        );
       } else {
         backupRecord({
           category: selectedCategory,
@@ -1920,7 +1969,7 @@ export default function Home() {
         });
         refreshBackupEntries();
         setErrorMessage(
-          `저장에 실패했습니다: ${error.message}. 이 브라우저에 백업을 남겼습니다.`,
+          "저장에 실패했습니다. 이 브라우저의 저장 실패 백업함에 기록을 보관했습니다.",
         );
       }
       setIsSaving(false);
@@ -2246,18 +2295,56 @@ export default function Home() {
   }
 
   async function handleRetryBackup(entry: BackupEntry) {
-    setDeletingBackupId(entry.id);
+    if (retryingBackupId) return;
+
+    setRetryingBackupId(entry.id);
     setErrorMessage("");
     setCopyMessage("");
 
-    const { error } = await supabase
+    const { data: existingRows, error: existingError } = await supabase
       .from("records")
-      .insert({ category: entry.category, content: entry.content });
+      .select("id, category, content, created_at")
+      .eq("category", entry.category)
+      .eq("content", entry.content)
+      .limit(1);
 
-    setDeletingBackupId(null);
+    if (existingError) {
+      logSupabaseError("check existing backup record", existingError);
+      setRetryingBackupId(null);
+      setErrorMessage(
+        "다시 저장 전 중복 여부를 확인하지 못했습니다. 백업은 그대로 유지했습니다.",
+      );
+      return;
+    }
 
-    if (error) {
-      setErrorMessage(`다시 저장에 실패했습니다: ${error.message}`);
+    if ((existingRows ?? []).length > 0) {
+      setRetryingBackupId(null);
+      setBackupEntries(removeBackupEntry(entry.id));
+      setCopyMessage("이미 저장된 백업이라 백업함에서만 정리했습니다.");
+      await fetchRecords();
+      return;
+    }
+
+    const { data: savedRow, error } = await supabase
+      .from("records")
+      .insert({ category: entry.category, content: entry.content })
+      .select("id, category, content, created_at")
+      .single();
+
+    setRetryingBackupId(null);
+
+    if (error || !savedRow) {
+      if (error) {
+        logSupabaseError("retry backup insert", error);
+      } else {
+        console.error("[Life Ledger] Supabase retry saved no record row", {
+          backupId: entry.id,
+          category: entry.category,
+        });
+      }
+      setErrorMessage(
+        "다시 저장에 실패했습니다. 백업은 그대로 유지했고, 개발자 콘솔에 상세 원인을 남겼습니다.",
+      );
       return;
     }
 
@@ -2267,7 +2354,15 @@ export default function Home() {
   }
 
   function handleDeleteBackup(id: string) {
+    const ok = window.confirm(
+      "이 백업 기록은 아직 Supabase 저장이 확인되지 않았습니다. 정말 삭제할까요?",
+    );
+
+    if (!ok) return;
+
+    setDeletingBackupId(id);
     setBackupEntries(removeBackupEntry(id));
+    setDeletingBackupId(null);
     setCopyMessage("백업을 삭제했습니다.");
     setErrorMessage("");
   }
@@ -2364,30 +2459,6 @@ export default function Home() {
           </button>
           <button
             type="button"
-            onClick={() => {
-              setView("weekly");
-              if (
-                "Notification" in window &&
-                Notification.permission === "default"
-              ) {
-                void Notification.requestPermission();
-              }
-            }}
-            className={`flex-1 rounded-lg px-2 py-2.5 text-xs font-semibold transition ${
-              view === "weekly"
-                ? "bg-white text-zinc-950 shadow-sm"
-                : "text-zinc-500 hover:text-zinc-700"
-            }`}
-          >
-            주간회고
-            {hasMissingWeeklyReview && (
-              <span className="ml-1 rounded-full bg-amber-400 px-1.5 py-0.5 text-xs text-white">
-                1
-              </span>
-            )}
-          </button>
-          <button
-            type="button"
             onClick={() => setView("fitness")}
             className={`flex-1 rounded-lg px-2 py-2.5 text-xs font-semibold transition ${
               view === "fitness"
@@ -2395,7 +2466,7 @@ export default function Home() {
                 : "text-zinc-500 hover:text-zinc-700"
             }`}
           >
-            운동현황
+            인바디
           </button>
         </div>
 
@@ -2418,9 +2489,8 @@ export default function Home() {
               </div>
 
               <div className="mt-3 flex flex-wrap gap-2">
-                {inputCategories.map((category) => {
+                {visibleInputCategories.map((category) => {
                   const recorded = todayCategorySet.has(category);
-                  const label = category === "공부/콘텐츠" ? "공부" : category;
 
                   return (
                     <span
@@ -2432,7 +2502,7 @@ export default function Home() {
                       }`}
                     >
                       <span>{recorded ? "●" : "○"}</span>
-                      {label}
+                      {category}
                     </span>
                   );
                 })}
@@ -2465,7 +2535,7 @@ export default function Home() {
           <div className="mt-6 space-y-3">
             <p className="text-sm font-semibold text-zinc-800">카테고리</p>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-              {inputCategories.map((category) => {
+              {visibleInputCategories.map((category) => {
                 const isSelected = selectedCategory === category;
 
                 return (
@@ -2687,14 +2757,6 @@ export default function Home() {
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={handleCopyWeeklyReview}
-            className="mt-2 w-full touch-manipulation rounded-lg border border-zinc-300 bg-white px-5 py-3 text-sm font-semibold text-zinc-800 transition hover:border-zinc-950 disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-300"
-          >
-            이번 주 회고 Markdown 복사
-          </button>
-
           {errorMessage ? (
             <p className="mt-3 text-sm font-medium text-red-700">
               {errorMessage}
@@ -2717,7 +2779,7 @@ export default function Home() {
               </p>
             </div>
             <span className="rounded-full bg-zinc-200 px-3 py-1 text-xs font-semibold text-zinc-700">
-              {filteredRecords.length}개
+              {recordLoadError ? "불러오기 실패" : `${filteredRecords.length}개`}
             </span>
           </div>
 
@@ -2777,6 +2839,22 @@ export default function Home() {
           {isLoading ? (
             <div className="rounded-lg border border-dashed border-zinc-300 bg-white p-6 text-center text-sm text-zinc-500">
               불러오는 중...
+            </div>
+          ) : recordLoadError ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-5 text-center">
+              <p className="text-sm font-semibold text-red-800">
+                기록을 불러오지 못했습니다.
+              </p>
+              <p className="mt-1 text-xs text-red-700">
+                기존 기록을 0개로 처리하지 않았습니다. 연결을 확인한 뒤 다시 시도하세요.
+              </p>
+              <button
+                type="button"
+                onClick={() => void fetchRecords()}
+                className="mt-3 touch-manipulation rounded-lg border border-red-200 bg-white px-4 py-2 text-xs font-semibold text-red-700 transition hover:border-red-700"
+              >
+                다시 불러오기
+              </button>
             </div>
           ) : filteredRecords.length === 0 ? (
             <div className="rounded-lg border border-dashed border-zinc-300 bg-white p-6 text-center text-sm text-zinc-500">
@@ -3059,17 +3137,20 @@ export default function Home() {
                     <button
                       type="button"
                       onClick={() => handleRetryBackup(entry)}
-                      disabled={deletingBackupId === entry.id}
+                      disabled={retryingBackupId !== null}
                       className="touch-manipulation rounded-lg border border-zinc-950 bg-zinc-950 px-3 py-2 text-xs font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:border-zinc-300 disabled:bg-zinc-300"
                     >
-                      {deletingBackupId === entry.id
+                      {retryingBackupId === entry.id
                         ? "저장 중..."
                         : "다시 저장"}
                     </button>
                     <button
                       type="button"
                       onClick={() => handleDeleteBackup(entry.id)}
-                      className="touch-manipulation rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-semibold text-red-700 transition hover:border-red-700"
+                      disabled={
+                        retryingBackupId !== null || deletingBackupId === entry.id
+                      }
+                      className="touch-manipulation rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-semibold text-red-700 transition hover:border-red-700 disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-300"
                     >
                       삭제
                     </button>
