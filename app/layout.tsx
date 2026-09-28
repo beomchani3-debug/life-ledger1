@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
+import { HomeScreenProvider } from "./components/home-screen";
 
 export const metadata: Metadata = {
   applicationName: "Life Ledger",
@@ -17,7 +18,7 @@ export const metadata: Metadata = {
   },
   icons: {
     icon: [{ url: "/icon.svg", type: "image/svg+xml" }],
-    apple: [{ url: "/icon.svg", type: "image/svg+xml" }],
+    apple: [{ url: "/apple-touch-icon.png", type: "image/png" }],
   },
 };
 
@@ -32,7 +33,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="ko" className="h-full antialiased">
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col"><HomeScreenProvider>{children}</HomeScreenProvider></body>
     </html>
   );
 }

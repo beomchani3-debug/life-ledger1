@@ -1,5 +1,7 @@
 "use client";
 
+/* eslint-disable @next/next/no-html-link-for-pages -- Full navigation reinitializes quick mode and refreshes saved records while retaining the session lock. */
+
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -16,6 +18,8 @@ import {
   YAxis,
 } from "recharts";
 import { supabase } from "@/src/lib/supabase";
+import { QuickCapture } from "./components/quick-capture";
+import { HomeScreenHelp } from "./components/home-screen";
 
 const inputCategories = ["일기", "투자", "운동", "공부/콘텐츠", "가치관"] as const;
 const visibleInputCategories = ["일기", "운동"] as const;
@@ -1413,6 +1417,13 @@ function WeeklyReviewForm({
 }
 
 export default function Home() {
+  const [quickCategory, setQuickCategory] = useState<"일기" | "운동" | null>(null);
+  useEffect(() => {
+    const mode = new URLSearchParams(window.location.search).get("quick");
+    queueMicrotask(() => {
+      setQuickCategory(mode === "diary" ? "일기" : mode === "workout" ? "운동" : null);
+    });
+  }, []);
   const [authStatus, setAuthStatus] = useState<AuthStatus>("checking");
   const [passwordInput, setPasswordInput] = useState("");
   const [passwordError, setPasswordError] = useState("");
@@ -1583,14 +1594,14 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (authStatus !== "unlocked") {
+    if (authStatus !== "unlocked" || quickCategory) {
       return;
     }
 
     queueMicrotask(() => {
       void fetchRecords();
     });
-  }, [authStatus, fetchRecords]);
+  }, [authStatus, fetchRecords, quickCategory]);
 
   useEffect(() => {
     if (authStatus !== "unlocked" || !("Notification" in window)) return;
@@ -2442,9 +2453,21 @@ export default function Home() {
     );
   }
 
+  if (quickCategory) {
+    return <QuickCapture initialCategory={quickCategory} onLock={handleLock} />;
+  }
+
   return (
     <main className="min-h-screen bg-stone-50 px-4 py-6 text-zinc-950 sm:px-6">
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
+        <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+          <h2 className="font-semibold">10초면 충분해요</h2>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <a href="/?quick=diary" className="rounded-lg bg-zinc-950 px-3 py-3 text-center text-sm font-semibold text-white">한 줄 일기</a>
+            <a href="/?quick=workout" className="rounded-lg border border-zinc-300 px-3 py-3 text-center text-sm font-semibold">운동 기록</a>
+          </div>
+          <div className="mt-3"><HomeScreenHelp /></div>
+        </section>
         <div className="flex gap-1 rounded-xl bg-zinc-100 p-1">
           <button
             type="button"
