@@ -2,7 +2,7 @@
   "name": "Life Ledger",
   "short_name": "Ledger",
   "description": "한 줄 일기와 운동을 빠르게 기록하는 나만의 기록장",
-  "start_url": "/?quick=diary",
+  "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "background_color": "#ffffff",
@@ -59,7 +59,7 @@
     },
     {
       "name": "전체 기록",
-      "url": "/"
+      "url": "/?view=records"
     }
   ]
 }

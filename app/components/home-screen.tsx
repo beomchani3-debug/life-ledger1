@@ -54,7 +54,7 @@ export function HomeScreenHelp() {
     <details className="rounded-xl border border-zinc-200 bg-white p-4 text-sm text-zinc-700">
       <summary className="cursor-pointer font-semibold">휴대폰 바탕화면에 추가하기</summary>
       <div className="mt-3 space-y-3 leading-6">
-        <p>바탕화면에서 Life Ledger를 열면 빠른 기록으로 시작해요.</p>
+        <p>바탕화면에서 열면 하던 운동·일기를 이어서 쓸 수 있어요.</p>
         {available && (
           <button type="button" onClick={() => void install()} className="rounded-lg bg-zinc-950 px-4 py-3 font-semibold text-white">
             홈 화면에 설치
